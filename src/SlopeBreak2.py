@@ -30,10 +30,11 @@ def studyArea(path):
           Written as (xlim, ylim). Is a tuple of tuples where each xlim and ylim are (x/ymin, x/ymax).
     """
     
+    # proj4 of EPSG:3031
     proj4_crs = "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
     study_area = gpd.read_file(path)
     study_area = study_area.to_crs(proj4_crs)
-    
+    # get x and y limits of study area in EPSG:3031
     bounds = study_area["geometry"].total_bounds
     xlim, ylim = (bounds[0], bounds[2]), (bounds[1], bounds[3])
     
@@ -59,6 +60,7 @@ def find_nearest(array, value):
     """
     
     array = np.asarray(array)
+    # subtract value from array and find lowest absolute value to get nearest.
     idx = (np.abs(array - value)).argmin()
     return int(idx)
 
@@ -79,6 +81,7 @@ def returnRNC(track):
           (rgt, name, cycle)
     """
     
+    # assumes that the information in the first row of the df is constant throughout
     row = track.iloc[0]
     rgt, name, cycle = row["rgt"], row["name"], row["cycle"]
     return rgt, name, cycle
@@ -115,7 +118,7 @@ def rough_test(track, avg, std):
     Poor test which checks if the percent of the data which is within 2 standard deviations of the mean, is greater than c (0.975).
     """
     
-    c = 0.975
+    c = 0.975 # percent within 2 standard deviations
     if c * len(track) <= len(track[(track["slope"] < avg + 2*std) & (track["slope"] > avg - 2*std)]):
         return True
     else:
@@ -141,8 +144,11 @@ def find_peaks(track, amp, dist):
           List of along track distances where peaks are.
     """
     
+    # find negative peaks and put into array
     peak_index = np.array(signal.find_peaks(track["slope_deriv_1"]*-1, height=amp, distance=dist)[0])
+    # append positive peaks to array
     peak_index = np.append(peak_index, np.array(signal.find_peaks(track["slope_deriv_1"], height=amp, distance=dist)[0]))
+    # convert indicies into along track distance
     peak_dists = (((track["along_dist"].max() - track["along_dist"].min()) / len(track)) * peak_index) + track["along_dist"].min()
     return peak_dists
 
@@ -167,7 +173,9 @@ def local_flowslope(local, peak):
           All operations are performed on the low pass filtered data
     """
     
+    # sort dataframe by proximity to peak
     df_sort = local.iloc[(local['along_dist']-peak).abs().argsort()[:]]
+    # compute paramters of nearest
     flowslope = df_sort.iloc[0]['slope-filt']
     flowslope_std = np.std(local['slope-filt'])
     return flowslope, flowslope_std
@@ -216,14 +224,16 @@ def comp_hstd(track, radius, peak, rgt, name, cycle, gline_xy, debug=False):
           Left and right standard deviations of the elevations over time.
     """
     
+    # check to see which cycles data exists for and put in list
     paths = []
-    for cyc in range(2, 7):
+    for cyc in range(1, 20):
         path = f"Saves/{rgt}/{name}/Bung-{cyc}.json"
         if os.path.isfile(path) == True and cyc != cycle:
             paths.append(path)
             
     l_means, r_means = [], []
     
+    # compute for input array
     hl_arr = list(track[(track["along_dist"] < peak) & (track["along_dist"] > peak - radius)]["h_li"])
     hr_arr = list(track[(track["along_dist"] > peak) & (track["along_dist"] < peak + radius)]["h_li"])
     l_means.append(np.nanmean(hl_arr))
@@ -233,6 +243,7 @@ def comp_hstd(track, radius, peak, rgt, name, cycle, gline_xy, debug=False):
     dmid = max(list(track[(track["along_dist"] < peak) & (track["along_dist"] > peak - radius)]["along_track_dist"]))
     dmax = max(list(track[(track["along_dist"] > peak) & (track["along_dist"] < peak + radius)]["along_track_dist"]))
     
+    # compute parameters for each cycle and append to list
     for path in paths:
         track = gpd.read_file(path)
         l = track[(track["along_track_dist"] < dmid) & (track["along_track_dist"] > dmin)]
@@ -244,6 +255,7 @@ def comp_hstd(track, radius, peak, rgt, name, cycle, gline_xy, debug=False):
         #hl_arr.extend(hl)
         #hr_arr.extend(hr)
         
+    # perform calculations on conglomerated means and deviations
     hl_std, hr_std = np.nanstd(l_means), np.nanstd(r_means)
     hl_avg, hr_avg = np.nanmean(l_means), np.nanmean(r_means)
     
@@ -553,13 +565,16 @@ def findIb(track, gline_xy, debug=False):
     # filt peaks
     peakdf = filt_peaks(peak_dists, track, metadata, gline_xy, debug=debug)
     
+    # attempt to find an ice plain
     try:
         plain = ice_plain_check(track, peakdf, debug=debug)
     except IndexError:
         plain = None
     
+    # remove certain peak predictions based on individual values (NOT QUALITY SCORE!)
     final_peaks = reduce_peakdf(peakdf, d_min=d_min, d_max=d_max)
     
+    # round peak values for display
     round_peaks = [str(round(peak, 2)) for peak in final_peaks["loc"]]
     if debug:
         print(f"REDUCED PICKS:\n {', '.join(round_peaks)}")
@@ -567,6 +582,7 @@ def findIb(track, gline_xy, debug=False):
     
     if len(final_peaks) > 0:
         
+        # choose the peak with the highest quality score and output.
         final_peaks = final_peaks.sort_values(by=['qs'], ascending=False)
         
         peak = final_peaks.iloc[0]["loc"]
