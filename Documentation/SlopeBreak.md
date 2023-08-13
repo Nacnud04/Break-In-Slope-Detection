@@ -1,7 +1,7 @@
 # Break in slope detection and filtering algorithm
 
 ## 0. Removal of bad tracks & inadequate data
-Initially for each track the necessary data is extracted, then the along track distance is computed. Then, the exact intersection location of the track with the grounding line is processed and along track distance is referenced relevant to the grounding line (0 = intersection with gline).
+Initially for each track the necessary data is extracted, then the along track distance is computed. Next, the exact intersection location of the track with the grounding line is processed and along track distance is referenced relevant to the grounding line (0 = intersection with gline).
 
 Next, distance to the grounding line is computed for each point, and a butterworth filter of order `5` and cutoff `0.032` is applied to the flowslope. This seems to be standard for applications such as this.
 
@@ -12,11 +12,13 @@ Data is then interpolated over, and gaps in data (which were subsequently filled
 Tracks with more than `1/3` nan data are removed.
 
 ## 1. Initial location of slope break options
-First, the derivative of the slope in direction of flow (flowslope) is calculated. This is refered to as the slope break.
+First, the derivative of the flowslope is calculated. This is referred to as the slope break.
 
 The track is then split into segments which each contain 1 intersection with the grounding line model. This should allow for multiple intersections with the grounding line 
 
-Possible slope break options are then chosen by looking for peaks in the slope break of a magnitude of `0.003` or greater. Additionally, if multiple peaks are within `400` indicies of one another (about 3-6km), the peak with the highest magnitude is chosen. This ensures that only one point is selected within the grounding zone.
+Possible slope break options are then chosen by looking for peaks in the slope break of a magnitude of `0.003` or greater. If less than 3 peaks are found, (common in areas with more gradual slopes) the magnitude is gradually reduced to `0.0001` until an adequate number of peaks are found.
+
+Additionally, if multiple peaks are within `400` indicies of one another (about 3km), the peak with the highest magnitude is chosen. This ensures that usually only one point is selected within the grounding zone.
 
 ## 2. Capture parameters local to each peak for filtering
 In order to filter out bad peaks from good peaks we capture parameters local to each peak to gauge its likelyhood of being the slope break.
@@ -36,6 +38,12 @@ Then the following parameters are computed:
 Quality score is a parameter to gauge the likelyhood of a peak being the actual break in slope. <br>
 Mathmatically it is represented as:<br>
 $$qs = |\log{\frac{s_r}{s_l}}| + |\log{\frac{a_r}{a_l}}| + 200s_0 - 0.01x$$
+
+<br>
+**Deviation of heights:**
+There is an option to compute the standard deviation of heights across all cycles on either side of the peak. Then the difference in the magnitude between the left and the right hand side will be added to the quality score, encouraging a large difference in deviation. This is done, as an ice shelf will have a larger deviation due to tidal influence than the sheet.
+
+This system is currently flawed however, as it is extremely computationally expensive (need to open many other cycles worth of data), and the benefit is currently negligible.
 
 ## 3. Filter points by captured parameters
 This is the stage where a point actually gets selected from the parameters which were just created.

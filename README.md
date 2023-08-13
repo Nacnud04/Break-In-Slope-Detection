@@ -6,7 +6,8 @@ A general outline of the repository and each notebook is contained here. More co
 ## Simplified Process
 * Compute flowslope
   * Performed by `S3-InitProcess.ipynb` using source files in the `ICESat2GroundingLineMigration` folder.
-* Find break in slope & ice plains via flowslope
+* Find break in slope & ice plains via flowslope & flowslope derived parameters
+  * *A more in detailed description is described in* `Documentation/SlopeBreak.md`
   * Computed by `FindSlopeBreak.ipynb`, `IbLine.ipynb` and `IbLine2.ipynb` via source files in the `src` folder.
 
 ## Main Directory
