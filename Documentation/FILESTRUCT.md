@@ -37,10 +37,6 @@ Documents
 
 ## Flow
 Directory containing the antarctic ice flow database. Used for computing direction of flow for when calculating flowslope
-<br>
-Additionally the following 2 data sets are contained in this directory, each of which are used for processing:<br>
-* MODIS Mosaic of Antarctica 2008-2009 (MOA2009) Image Map, Version 2<sup>[1][2]</sup>
-* MEaSUREs Antarctic Grounding Line from Differential Satellite Radar Interferometry, Version 2<sup>[3]</sup>
 
 ## ICESat2GroundingLineMigration
 Codebase notebooks and source code in `src` rely on. Used to make working with the ICESat2 data much easier by splitting data into multiple levels including `Database`, `Granule`, `Laser` and `Basemap`.
@@ -48,6 +44,10 @@ Additionally contains many utilities for working with the flow data, as well as 
 
 ## Line
 Contains grounding line models
+<br>
+Additionally the following 2 data sets are contained in this directory, each of which are used for processing:<br>
+* MODIS Mosaic of Antarctica 2008-2009 (MOA2009) Image Map, Version 2<sup>[1][2]</sup>
+* MEaSUREs Antarctic Grounding Line from Differential Satellite Radar Interferometry, Version 2<sup>[3]</sup>
 
 ## Saves
 Contains geojson files as exported by `S3-InitProcess.ipynb`. These are files which contain all of the ICESat2-ATL06 data with some additional parameters. Mainly flowslope (slope in the direction of ice flow).
