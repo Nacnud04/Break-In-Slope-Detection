@@ -8,7 +8,7 @@ A general outline of the repository and each notebook is contained here. More co
   * Performed by `S3-InitProcess.ipynb` using source files in the `ICESat2GroundingLineMigration` folder.
 * Find break in slope & ice plains via flowslope & flowslope derived parameters
   * *A more in detailed description is described in* `Documentation/SlopeBreak.md`
-  * Computed by `FindSlopeBreak.ipynb`, `IbLine.ipynb` and `IbLine2.ipynb` via source files in the `src` folder.
+  * Computed by `FindSlopeBreak.ipynb` and `IbLine2.ipynb` via source files in the `src` folder.
 
 ## Main Directory
 ### Folders
@@ -23,5 +23,5 @@ Each notebook's function is described below:
 
 **IbCombined**: When break in slope predictions are exported by `IbLine2` they are output into the `Line` directory. This notebook imports all exported data and displays it all in a variety of ways. This includes: Comparisons with other grounding line models, visualizing the quality score parameter, median location of a single break in slope across cycles, as well as displaying the raw data.
 
-**IbLine2**: Relies on `src/SlopeBreak2.py` (similarly `IbLine` relies on `src/SlopeBreak.py`). This notebook imports an entire cycle of data exported by `S3-InitProcess.py` and finds the break in slope for each beam and ground track. Then it exports the data to `Line`
+**IbLine2**: Relies on `src/SlopeBreak2.py` (similarly `IbLine` relies on `src/SlopeBreak.py`). This notebook imports an entire cycle of data exported by `S3-InitProcess.py` and finds the break in slope for each beam and ground track. Then it exports the data to `Line`.
 
