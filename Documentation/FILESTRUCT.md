@@ -37,6 +37,10 @@ Documents
 
 ## Flow
 Directory containing the antarctic ice flow database. Used for computing direction of flow for when calculating flowslope
+<br>
+Additionally the following 2 data sets are contained in this directory, each of which are used for processing:<br>
+* MODIS Mosaic of Antarctica 2008-2009 (MOA2009) Image Map, Version 2<sup>[1][2]</sup>
+* MEaSUREs Antarctic Grounding Line from Differential Satellite Radar Interferometry, Version 2<sup>[3]</sup>
 
 ## ICESat2GroundingLineMigration
 Codebase notebooks and source code in `src` rely on. Used to make working with the ICESat2 data much easier by splitting data into multiple levels including `Database`, `Granule`, `Laser` and `Basemap`.
@@ -51,3 +55,19 @@ Within this folder data is divided into folders by RGT, then by beam. Within eac
 
 ## src
 Contains source code for later processing of the actual break in slope. Functions in this folder are very heavily used after the geojson files are exported by `S3-InitProcess.ipynb`.
+
+# References
+
+1. Haran, T., J. Bohlander, T. Scambos, T. Painter, and M. Fahnestock. 2014, updated 2019. MODIS <br>
+   Mosaic of Antarctica 2008-2009 (MOA2009) Image Map, Version 1. Ice Sheet Grounding Lines. Boulder, <br>
+   Colorado USA. NASA National Snow and Ice Data Center Distributed Active Archive Center. <br>
+   https://doi.org/10.5067/4ZL43A4619AF. 06-27-2023. <br>
+
+2. Scambos, T., T. Haran, M. Fahnestock, T. Painter, and J. Bohlander. 2007. MODIS-based Mosaic of <br>
+   Antarctica (MOA) data sets: Continent-wide surface morphology and snow grain size, Remote <br>
+   Sensing of Environment. 111. 242-257. https://doi.org/10.1016/j.rse.2006.12.020 <br>
+   
+3. Rignot, E., J. Mouginot, and B. Scheuchl. 2016. MEaSUREs Antarctic Grounding Line from <br>
+   Differential Satellite Radar Interferometry, Version 2. Ice Sheet Grounding Lines. Boulder, Colorado USA. <br>
+   NASA National Snow and Ice Data Center Distributed Active Archive Center. <br>
+   https://doi.org/10.5067/IKBWW4RYHF1Q. 02-12-2023. <br>
