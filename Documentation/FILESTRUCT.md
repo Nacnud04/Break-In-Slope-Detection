@@ -2,7 +2,7 @@
 
 The system filestructure is broken up into the following directories:
 
-**NOTE**: *Directories which are italicized are not located in the repository*
+**NOTE**: *Directories which are italicized are not located in the repository (or some larger data files are left out)*
 
 * Archive
 * *ATL06*
