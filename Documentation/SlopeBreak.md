@@ -29,15 +29,15 @@ Additionally, points local to bad or "rough" data are removed. This is performed
 
 Then the following parameters are computed:
 * $x$ Peak along track location
-* Flowslope at peak
-* $s_0$ Standard deviation of flowslope local to peak (about `0.5km` radius)
-* $a_r$, $a_l$ The average of both points up and down track out to a certain radius (about `5km`)
-* $s_r$, $s_l$ The standard deviation of points both up and down track out to a certain radius (`40km`) while excluding points from an inner radius around the peak (`3km`)
+* $f$ Flowslope at peak
+* $\sigma_0$ Standard deviation of flowslope local to peak (about `0.5km` radius)
+* $\overline{f}_r$  $\overline{f}_l$ The mean of flowslope up and down track out to a certain radius (about `5km`)
+* $\sigma_r$  $\sigma_l$ The standard deviation of flowslope both up and down track out to a certain radius (`40km`) while excluding points from an inner radius around the peak (`3km`)
 * $qs$ The "quality score"
 
 Quality score is a parameter to gauge the likelyhood of a peak being the actual break in slope. <br>
 Mathmatically it is represented as:<br>
-$$qs = |\log{\frac{s_r}{s_l}}| + |\log{\frac{a_r}{a_l}}| + 200s_0 - 0.01x$$
+$$qs = |\log{\frac{\sigma_r}{\sigma_l}}| + |\log{\frac{\overline{f}_r}{\overline{f}_l}}| + 200\sigma_0 - 0.01x$$
 
 <br>
 **Deviation of heights:**
