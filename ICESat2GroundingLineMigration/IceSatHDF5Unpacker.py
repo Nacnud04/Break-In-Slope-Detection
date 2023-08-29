@@ -20,24 +20,7 @@ colordict = {
         }
 
 path = r'C:\Users\Nacnu\Documents\IceSat2\backgrounddata\ATA_adm0.shp'
-
-def getColorDict():
-    return colordict
-
-class Basemap:
-    def __init__(self, path:str):
-        self.data = gpd.read_file(path)
-
-        self.crs = ccrs.SouthPolarStereo()
-        self.crs_proj4 = self.crs.proj4_init
-        self.basemap_gpd = self.data.to_crs(self.crs_proj4)
-
-    def getBasemap(self):
-        return self.basemap_gpd
-
-    def getCRS(self):
-        return self.crs_proj4
-
+        
 def getColorDict():
     return colordict
 
@@ -76,22 +59,6 @@ class Dataset:
         self.files = [f for f in files if os.path.isfile(folder+'/'+f)]
 
         self.datafiles = [f for f in files if f.split('.')[-1] == "h5"]
-
-        ## group similar/overlapping files
-        #self.coverage = {}
-        #for datafile in self.datafiles:
-        #    granule = Granule(self.folder, datafile)
-        #    rgts, (start_region, end_region) = granule.getGranulePath()
-        #    for region in range(start_region, end_region+1):
-        #        for rgt in [x for i, x in enumerate(rgts) if i == 0 or x != rgts[1]]:
-        #            if region not in self.coverage:
-        #                self.coverage[region] = {rgt:[granule.filename]}
-        #            else:
-        #                if rgt not in self.coverage[region]:
-        #                    self.coverage[region][rgt] = [granule.filename]
-        #                if granule.filename not in self.coverage[region][rgt]:
-        #                    self.coverage[region][rgt].append(granule.filename)
-        #    del granule
 
     def coverageReport(self):
         """
@@ -412,11 +379,9 @@ class Granule:
         self.metadata = {"folder":self.folder,"filename":self.filename,"orientation":orientation,"start_rgt":self.start_rgt,"end_rgt":self.end_rgt,
                          "start_region":self.start_region,"end_region":self.end_region,"start_cycle":self.start_cycle,"end_cycle":self.end_cycle}
 
-        self.laser1l, self.laser1r = Laser(filedata["gt1l"],"gt1l", filename, self.metadata), Laser(filedata["gt1r"],"gt1r", filename, self.metadata)
-        self.laser2l, self.laser2r = Laser(filedata["gt2l"],"gt2l", filename, self.metadata), Laser(filedata["gt2r"],"gt2r", filename, self.metadata)
-        self.laser3l, self.laser3r = Laser(filedata["gt3l"],"gt3l", filename, self.metadata), Laser(filedata["gt3r"],"gt3r", filename, self.metadata)
-
-        self.lasers = (self.laser1l, self.laser1r, self.laser2l, self.laser2r, self.laser3l, self.laser3r)
+        self.lasers = (Laser(filedata["gt1l"],"gt1l", filename, self.metadata), Laser(filedata["gt1r"],"gt1r", filename, self.metadata), 
+                       Laser(filedata["gt2l"],"gt2l", filename, self.metadata), Laser(filedata["gt2r"],"gt2r", filename, self.metadata), 
+                       Laser(filedata["gt3l"],"gt3l", filename, self.metadata), Laser(filedata["gt3r"],"gt3r", filename, self.metadata))
         
         self.sc_orient = filedata["orbit_info"]["sc_orient"]
 
@@ -617,11 +582,11 @@ class Laser:
             Data about laser track. Formatted as (lat, lon, time, dh_fit_dx, dh_fit_dx_sigma, metadata, granuledata)
         """
 
-        lat = self.land_ice_segments["latitude"][()]
-        lon = self.land_ice_segments["longitude"][()]
-        time = self.land_ice_segments["delta_time"][()]
-        h_li = self.land_ice_segments["h_li"][()]
-        return (lat, lon, time, h_li, self.dh_fit_dx, self.dh_fit_dx_sigma, self.metadata, self.granuledata)
+        return (self.land_ice_segments["latitude"], 
+                self.land_ice_segments["longitude"], 
+                self.land_ice_segments["delta_time"], 
+                self.land_ice_segments["h_li"], 
+                self.dh_fit_dx, self.dh_fit_dx_sigma, self.metadata, self.granuledata)
 
     def returnAzimuth(self):
         """
@@ -644,7 +609,7 @@ class Laser:
         dh_fit_dy : np.array
               Array of across track slope data
         """
-        dh_fit_dy = self.land_ice_segments["fit_statistics"]["dh_fit_dy"][()]
+        dh_fit_dy = self.land_ice_segments["fit_statistics"]["dh_fit_dy"]
         return dh_fit_dy
 
 class Basemap:
