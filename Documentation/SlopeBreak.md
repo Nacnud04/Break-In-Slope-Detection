@@ -37,7 +37,7 @@ Then the following parameters are computed:
 
 Quality score is a parameter to gauge the likelyhood of a peak being the actual break in slope. <br>
 Mathmatically it is represented as:<br>
-$$qs = |\log{\frac{\sigma_r}{\sigma_l}}| + |\log{\frac{\overline{f}_r}{\overline{f}_l}}| + 200\sigma_0 - 0.01x$$
+$$qs = \log{\frac{\sigma_r}{\sigma_l}} + \log{\frac{\overline{f}_r}{\overline{f}_l}} + 200\sigma_0 - 0.01x$$
 
 <br>
 **Deviation of heights:**
