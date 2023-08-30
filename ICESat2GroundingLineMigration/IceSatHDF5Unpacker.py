@@ -582,10 +582,10 @@ class Laser:
             Data about laser track. Formatted as (lat, lon, time, dh_fit_dx, dh_fit_dx_sigma, metadata, granuledata)
         """
 
-        return (self.land_ice_segments["latitude"], 
-                self.land_ice_segments["longitude"], 
-                self.land_ice_segments["delta_time"], 
-                self.land_ice_segments["h_li"], 
+        return (np.array(self.land_ice_segments["latitude"]), 
+                np.array(self.land_ice_segments["longitude"]), 
+                np.array(self.land_ice_segments["delta_time"]), 
+                np.array(self.land_ice_segments["h_li"]), 
                 self.dh_fit_dx, self.dh_fit_dx_sigma, self.metadata, self.granuledata)
 
     def returnAzimuth(self):
