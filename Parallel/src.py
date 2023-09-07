@@ -13,6 +13,7 @@ from time import time as Time
 import matplotlib.pyplot as plt
 import icepyx as ipx
 import s3fs
+import pyproj
 
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
@@ -105,12 +106,33 @@ def gen_s3(region):
     return s3
 
 
-def make_laser(laser, rgt, region, cycle, name, GPU):
+def find_nearest(arr, val):
+    return int((np.abs(arr-val)).argmin())
+
+
+def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
     
     land_ice_segments = laser["land_ice_segments"]
-    fit_statistics = land_ice_segments["fit_statistics"]
     
     lat, lon = land_ice_segments["latitude"], land_ice_segments["longitude"]
+    
+    xlim, ylim = bounds
+    
+    if not GPU:
+        # transform crs
+        source_proj4 = '+proj=latlong +datum=WGS84'
+        target_proj4 = crs()
+        transformer = pyproj.Transformer.from_proj(pyproj.Proj(source_proj4), pyproj.Proj(target_proj4), always_xy=True)
+        x, y = transformer.transform(lon[:], lat[:])
+        # find where x exceeds xmax or dips below xmin
+        idxmin, idxmax = find_nearest(x, xlim[0]), find_nearest(x, xlim[1])
+        # crop by x bounds so y has to do a less exhaustive search
+        if idxmin <= idxmax: y = y[idxmin:idxmax]
+        if idxmin > idxmax: y = y[idxmax:idxmin]
+        ifymin, idymax = find_nearest(y, ylim[0]), find_nearest(y, ylim[1])
+
+    """
+    fit_statistics = land_ice_segments["fit_statistics"]
     time = land_ice_segments["delta_time"]
     h_li = land_ice_segments["h_li"]
     dh_fit_dx = fit_statistics["dh_fit_dx"]
@@ -121,7 +143,13 @@ def make_laser(laser, rgt, region, cycle, name, GPU):
     df = vx.from_dict(data)
     
     if not GPU:
-        
+        pass
+        # transform crs
+        #source_proj4 = '+proj=latlong +datum=WGS84'
+        #target_proj4 = crs()
+        #transformer = pyproj.Transformer.from_proj(pyproj.Proj(source_proj4), pyproj.Proj(target_proj4), always_xy=True)
+        #df['x'], df['y'] = transformer.transform(df['lon'].to_numpy(), df['lat'].to_numpy())
         
     else:
         print(GPU)
+    """

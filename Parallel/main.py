@@ -16,20 +16,24 @@ from time import time as Time
 def dtm():
     return datetime.datetime.now()
 
-def process(link, s3):
+def process(link, s3, GPU, bounds):
     
     if not link:
         return None
     
     st = Time()
+    
+    # maybe one day try to convert this to vaex
     filedata = h5py.File(s3.open(link,'rb'),'r')
     ancillary_data = filedata["ancillary_data"]
     rgt, region, cycle = ancillary_data["start_rgt"][0], ancillary_data["start_region"][0], ancillary_data["start_cycle"][0]
     lasers = (filedata["gt1l"], filedata["gt1r"], filedata["gt2l"], filedata["gt2r"], filedata["gt3l"], filedata["gt3r"])
     names = ("gt1l", "gt1r", "gt2l", "gt2r", "gt3l", "gt3r")
+    
     # open each laser and load into vaex
     for laser, name in zip(lasers, names):
-        make_laser(laser, rgt, region, cycle, name)
+        make_laser(laser, rgt, region, cycle, name, bounds, GPU)
+        
     print(f"time: {Time()-st}")
     # open s3 using vaex
     #df = vx.open(s3.open(link,'rb'))
@@ -80,12 +84,14 @@ def main():
     print(f"{dtm()} - Starting parallel processes")
     
     for batch in range(batchs):
+        st = Time()
         print(f"{dtm()} - -= BATCH {batch} =-")
         links, filecounts = linkbatchs[batch], cntbatchs[batch]
-        params = [(l, s3) for l in links]
+        params = [(l, s3, GPU, (xlim, ylim)) for l in links]
 
         with multiprocessing.Pool(cores) as pool:
             pool.starmap(process, params)
+        print(f"{dtm()} - -= BATCH TIME: {Time() - st} =-")
     
 if __name__ == "__main__":
     main()
