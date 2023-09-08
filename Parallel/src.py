@@ -16,12 +16,21 @@ import s3fs
 import pyproj
 
 from rich import print, pretty
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+
 
 pretty.install()
 
 from datetime import datetime
 def dtm():
-    return f'[white][{datetime.now().strftime("%H:%M:%S")}][/white]'
+    return f'[bright_black][{datetime.now().strftime("%H:%M:%S")}][/bright_black]'
 
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
@@ -70,22 +79,26 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
         mshx, mshy = np.meshgrid(xarr, yarr)
         
         polygons = []
-        for i in range(ylen - 1):
-            for j in range(xlen - 1):
-                print(f"Mapping geometries: {i * xlen + j}/{(xlen)*(ylen)}", end="       \r")
-                polygon = Polygon([(mshx[i, j], mshy[i, j]),
-                              (mshx[i + 1, j], mshy[i + 1, j]),
-                              (mshx[i + 1, j + 1], mshy[i + 1, j + 1]),
-                              (mshx[i, j + 1], mshy[i, j + 1])])
-                polygons.append(polygon)
-        print(f"Mapping geometries: Complete", end="                                     \r")
+        
+        # Assuming ylen and xlen are defined somewhere in your code
+        with Progress() as progress:
+            task = progress.add_task(f"{dtm()} - [cyan]Mapping geometries...", total=(ylen - 1) * (xlen - 1))
+
+            for i in range(ylen - 1):
+                for j in range(xlen - 1):
+                    polygon = Polygon([(mshx[i, j], mshy[i, j]),
+                                      (mshx[i + 1, j], mshy[i + 1, j]),
+                                      (mshx[i + 1, j + 1], mshy[i + 1, j + 1]),
+                                      (mshx[i, j + 1], mshy[i, j + 1])])
+                    polygons.append(polygon)
+                    progress.update(task, advance=1)
                 
         angle = angle[:-1, :-1]
                 
-        print(f"\nMigrating into geodataframe...")
+        print(f"{dtm()} - Migrating into geodataframe...")
         gdf = gpd.GeoDataFrame({'geometry': polygons, 'angle': angle.flatten()})
         
-        print(f"Masking geodataframe...")
+        print(f"{dtm()} - Masking geodataframe...")
         gdf = gdf.clip(mask)
         
     else:
