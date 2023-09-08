@@ -15,6 +15,14 @@ import icepyx as ipx
 import s3fs
 import pyproj
 
+from rich import print, pretty
+
+pretty.install()
+
+from datetime import datetime
+def dtm():
+    return f'[white][{datetime.now().strftime("%H:%M:%S")}][/white]'
+
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
 
@@ -27,7 +35,7 @@ def spatial_extent(filename):
 
 def load_flowslope(filepath, mask, xlim, ylim, gpu):
 
-    print(f"Importing flow vectors...")
+    print(f"{dtm()} - Importing flow vectors... ")
     f = nc.Dataset(filepath)
 
     x = f.variables['x'][:]
@@ -36,7 +44,7 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
     xmin, xmax = xlim
     ymin, ymax = ylim
 
-    print(f"Cropping geometries...")
+    print(f"{dtm()} - Cropping geometries...")
     # All indices in bounding box:
     where_j = np.where((y >= ymin) & (y <= ymax))[0]
     where_i = np.where((x >= xmin) & (x <= xmax))[0]
@@ -48,7 +56,7 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
     j0 = where_j[0]
     j1 = where_j[-1]+1
     
-    print(f"Computing flow vectors...")
+    print(f"{dtm()} - Computing flow vectors...")
     if not gpu:
         
         VX = f.variables['VX'][j0:j1, i0:i1]
@@ -64,12 +72,13 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
         polygons = []
         for i in range(ylen - 1):
             for j in range(xlen - 1):
-                print(f"Mapping geometries: {i * xlen + j}/{xlen*ylen}", end="       \r")
+                print(f"Mapping geometries: {i * xlen + j}/{(xlen)*(ylen)}", end="       \r")
                 polygon = Polygon([(mshx[i, j], mshy[i, j]),
                               (mshx[i + 1, j], mshy[i + 1, j]),
                               (mshx[i + 1, j + 1], mshy[i + 1, j + 1]),
                               (mshx[i, j + 1], mshy[i, j + 1])])
                 polygons.append(polygon)
+        print(f"Mapping geometries: Complete", end="                                     \r")
                 
         angle = angle[:-1, :-1]
                 
@@ -119,37 +128,27 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
     xlim, ylim = bounds
     
     if not GPU:
+        
         # transform crs
         source_proj4 = '+proj=latlong +datum=WGS84'
         target_proj4 = crs()
         transformer = pyproj.Transformer.from_proj(pyproj.Proj(source_proj4), pyproj.Proj(target_proj4), always_xy=True)
         x, y = transformer.transform(lon[:], lat[:])
-        # find where x exceeds xmax or dips below xmin
+        # find where track escapes bounding box
         idxmin, idxmax = find_nearest(x, xlim[0]), find_nearest(x, xlim[1])
-        # crop by x bounds so y has to do a less exhaustive search
-        if idxmin <= idxmax: y = y[idxmin:idxmax]
-        if idxmin > idxmax: y = y[idxmax:idxmin]
-        ifymin, idymax = find_nearest(y, ylim[0]), find_nearest(y, ylim[1])
-
-    """
-    fit_statistics = land_ice_segments["fit_statistics"]
-    time = land_ice_segments["delta_time"]
-    h_li = land_ice_segments["h_li"]
-    dh_fit_dx = fit_statistics["dh_fit_dx"]
-    dh_fit_dy = fit_statistics["dh_fit_dy"]
-    azumith = land_ice_segments["ground_track"]["ref_azimuth"]
+        idymin, idymax = find_nearest(y, ylim[0]), find_nearest(y, ylim[1])
     
-    data = {"lat":lat, "lon":lon, "time":time, "h_li":h_li, "dh_fit_dx":dh_fit_dx, "dh_fit_dy":dh_fit_dy, "azumith":azumith}
+        
+    idmin = min(idxmin, idxmax, idymin, idymax)
+    idmax = max(idxmin, idxmax, idymin, idymax)
+
+    fit_statistics = land_ice_segments["fit_statistics"]
+    
+    data = {"x":x[idmin:idmax], "y":y[idmin:idmax], "time":land_ice_segments["delta_time"][idmin:idmax], 
+            "h_li":land_ice_segments["h_li"][idmin:idmax], "dh_fit_dx":fit_statistics["dh_fit_dx"][idmin:idmax], 
+            "dh_fit_dy":fit_statistics["dh_fit_dy"][idmin:idmax], 
+            "azumith":land_ice_segments["ground_track"]["ref_azimuth"][idmin:idmax]}
+    
     df = vx.from_dict(data)
     
-    if not GPU:
-        pass
-        # transform crs
-        #source_proj4 = '+proj=latlong +datum=WGS84'
-        #target_proj4 = crs()
-        #transformer = pyproj.Transformer.from_proj(pyproj.Proj(source_proj4), pyproj.Proj(target_proj4), always_xy=True)
-        #df['x'], df['y'] = transformer.transform(df['lon'].to_numpy(), df['lat'].to_numpy())
-        
-    else:
-        print(GPU)
-    """
+    return df

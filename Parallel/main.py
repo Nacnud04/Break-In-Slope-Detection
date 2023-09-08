@@ -7,21 +7,27 @@ import shapely as sp
 import vaex as vx
 import argparse
 import multiprocessing
-import datetime
+from datetime import datetime
 import h5py
+from rich import print, pretty
+
+pretty.install()
 
 from src import *
 from time import time as Time
 
 def dtm():
-    return datetime.datetime.now()
+    return f'[{datetime.now().strftime("%H:%M:%S")}]'
+
+def core_name():
+    return int(multiprocessing.current_process().name.split('-')[-1]) % 4
 
 def process(link, s3, GPU, bounds):
     
     if not link:
         return None
     
-    st = Time()
+    sst = Time()
     
     # maybe one day try to convert this to vaex
     filedata = h5py.File(s3.open(link,'rb'),'r')
@@ -32,9 +38,12 @@ def process(link, s3, GPU, bounds):
     
     # open each laser and load into vaex
     for laser, name in zip(lasers, names):
-        make_laser(laser, rgt, region, cycle, name, bounds, GPU)
+        lst = Time()
+        df = make_laser(laser, rgt, region, cycle, name, bounds, GPU)
+        print(f"{dtm()} - CORE:{core_name()} - {rgt}-{name} load time: {Time()-lst}")
+        st = Time()
         
-    print(f"time: {Time()-st}")
+    print(f"{dtm()} - CORE:{core_name()} - FULL load time: {Time()-sst}")
     # open s3 using vaex
     #df = vx.open(s3.open(link,'rb'))
     
@@ -51,13 +60,13 @@ def main():
     GPU = args.GPU
 
     cycles = [int(x) for x in args.Cycles.split(',')]
-    print(f"CYCLES: {cycles}")
+    print(f"[bold yellow]CYCLES:[/bold yellow] {cycles}")
 
     spat_ext = args.SpatialExtent
-    print(f"SPATIAL EXTENT: {spat_ext}")
+    print(f"[bold yellow]SPATIAL EXTENT:[/bold yellow] [italic]{spat_ext}[/italic]")
     
     cores = multiprocessing.cpu_count()
-    print(f"CORES: {cores}")
+    print(f"[bold yellow]CORES:[/bold yellow] {cores}")
 
     # load spatial extent
     mask, xlim, ylim = spatial_extent(spat_ext)
