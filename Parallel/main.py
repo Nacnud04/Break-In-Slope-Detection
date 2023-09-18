@@ -22,7 +22,7 @@ def dtm():
 def core_name():
     return int(multiprocessing.current_process().name.split('-')[-1]) % 4
 
-def process(link, s3, GPU, bounds):
+def process(link, s3, mask, bounds, GPU):
     
     if not link:
         return None
@@ -37,16 +37,27 @@ def process(link, s3, GPU, bounds):
     names = ("gt1l", "gt1r", "gt2l", "gt2r", "gt3l", "gt3r")
     
     # open each laser and load into vaex
+    df = None
+    nlasers = []
     for laser, name in zip(lasers, names):
         lst = Time()
         df = make_laser(laser, rgt, region, cycle, name, bounds, GPU)
-        print(f"{dtm()} - CORE:{core_name()} - {rgt}-{name} load time: {Time()-lst}")
+        nlasers.append(df)
         st = Time()
+    lasers = nlasers
+    del nlasers
         
-    print(f"{dtm()} - CORE:{core_name()} - FULL load time: {Time()-sst}")
-    # open s3 using vaex
-    #df = vx.open(s3.open(link,'rb'))
+    print(f"{dtm()} - CORE: {core_name()} - [bold]Imported[/bold] rgt {rgt} in: [bright_cyan]{round(Time()-sst, 4)}[/bright_cyan]s")
     
+    # clip lasers by masks, and remove poor quality points
+    lst = Time()
+    lasers = reduce_dfs(lasers, mask)
+    print(f"{dtm()} - CORE: {core_name()} - Clipped rgt: {rgt} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
+    
+    lasers = along_track_distance(lasers)
+    print(f"{dtm()} - CORE: {core_name()} - Calc'd along track dist for {rgt}-{name} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
+    
+    return {"rgt":rgt, "cycle":cycle, "lasers":lasers}
 
 def main():
 
@@ -96,11 +107,12 @@ def main():
         st = Time()
         print(f"{dtm()} - -= BATCH {batch} =-")
         links, filecounts = linkbatchs[batch], cntbatchs[batch]
-        params = [(l, s3, GPU, (xlim, ylim)) for l in links]
+        params = [(l, s3, mask, (xlim, ylim), GPU) for l in links]
 
         with multiprocessing.Pool(cores) as pool:
-            pool.starmap(process, params)
-        print(f"{dtm()} - -= BATCH TIME: {Time() - st} =-")
+            dcts = pool.starmap(process, params)
+        
+        print(f"{dtm()} - -= BATCH TIME: {round(Time() - st, 4)} =-")
     
 if __name__ == "__main__":
     main()

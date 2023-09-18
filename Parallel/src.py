@@ -5,7 +5,7 @@ import vaex as vx
 import argparse
 import netCDF4 as nc
 
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import Polygon, mapping, Point
 from shapely.prepared import prep
 from rasterio.features import geometry_mask
 from time import time as Time
@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import icepyx as ipx
 import s3fs
 import pyproj
+import multiprocessing
 
 from rich import print, pretty
 from rich.progress import (
@@ -30,10 +31,31 @@ pretty.install()
 
 from datetime import datetime
 def dtm():
-    return f'[bright_black][{datetime.now().strftime("%H:%M:%S")}][/bright_black]'
+    return f'[{datetime.now().strftime("%H:%M:%S")}]'
+
+def core_name():
+    return int(multiprocessing.current_process().name.split('-')[-1]) % 4
 
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
+
+@vx.register_dataframe_accessor('mytool', override=True)
+class mytool:
+    def __init__(self, df):
+        self.df = df
+
+    def shift(self, column, n, inplace=False):
+        # make a copy without column
+        df = self.df.copy().drop(column)
+        # make a copy with just the colum
+        df_column = self.df[[column]]
+        # slice off the head and tail
+        df_head = df_column[-n:]
+        df_tail = df_column[:-n]
+        # stitch them together
+        df_shifted = df_head.concat(df_tail)
+        # and join (based on row number)
+        return df.join(df_shifted, inplace=inplace)
 
 def spatial_extent(filename):
     bgdf = gpd.read_file(filename)
@@ -82,7 +104,7 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
         
         # Assuming ylen and xlen are defined somewhere in your code
         with Progress() as progress:
-            task = progress.add_task(f"{dtm()} - [cyan]Mapping geometries...", total=(ylen - 1) * (xlen - 1))
+            task = progress.add_task(f"{dtm()} - [cyan]Mapping flow geometries...", total=(ylen - 1) * (xlen - 1))
 
             for i in range(ylen - 1):
                 for j in range(xlen - 1):
@@ -116,7 +138,7 @@ def file_query(spt_ext, cyc):
     # grab s3 links
     gran_ids = region.avail_granules(ids=True, cloud=True)
     links = gran_ids[1]
-    print(f"Found {len(links)} granules in {round(Time() - st, 5)}s")
+    print(f"{dtm()} - Found {len(links)} granules in [bright_cyan]{round(Time() - st, 5)}[/bright_cyan]s")
     
     return region, links
     
@@ -160,8 +182,57 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
     data = {"x":x[idmin:idmax], "y":y[idmin:idmax], "time":land_ice_segments["delta_time"][idmin:idmax], 
             "h_li":land_ice_segments["h_li"][idmin:idmax], "dh_fit_dx":fit_statistics["dh_fit_dx"][idmin:idmax], 
             "dh_fit_dy":fit_statistics["dh_fit_dy"][idmin:idmax], 
-            "azumith":land_ice_segments["ground_track"]["ref_azimuth"][idmin:idmax]}
+            "azumith":land_ice_segments["ground_track"]["ref_azimuth"][idmin:idmax],
+            "quality":land_ice_segments["atl06_quality_summary"][idmin:idmax]}
     
     df = vx.from_dict(data)
     
     return df
+
+
+def reduce_dfs(lasers, mask, clpbMsk=False):
+    
+    nlasers = []
+    for df in lasers:
+        if clpbMsk:
+            keep = []
+            tot = len(df)
+            for i, row in df.iterrows():
+                keep.append(mask.contains(Point(row['x'], row['y'])))
+                print(f"{round(100*i/tot, 2)}", end="\r")
+            df = df[keep]
+        df = df[df["quality"] == 0] # remove points of low quality
+        # get rid of extreme or obviously incorrect points
+        df = df[(df["dh_fit_dy"] > -1) & (df["dh_fit_dy"] < 1)]
+        df = df.extract() # extract and filter
+        nlasers.append(df)
+    return nlasers
+    
+
+
+def along_track_distance(lasers):
+    
+    out = []
+    for df in lasers:
+        #print(f"x:{len(df['x'][:])} | y:{len(df['y'][:])}")
+        #df['x_shifted'] = df["x"]
+        #df = df.mytool.shift('x_shifted', 1)
+        #df['y_shifted'] = df["y"]
+        #df = df.mytool.shift('y_shifted', 1)
+        
+        x, y = df["x"].values, df["y"].values
+        
+        x_s = np.roll(x, 1)
+        y_s = np.roll(y, 1)
+
+        # Calculate squared differences
+        xd2 = (x - x_s) ** 2
+        yd2 = (y - y_s) ** 2
+        
+        # Calculate the total distance as the square root of the sum of squared differences
+        df['distance'] = (xd2 + yd2) ** 0.5
+        
+        print(f"{x}\n{y}\n{df['distance'].values}")
+        out.append(df)
+    
+    return out
