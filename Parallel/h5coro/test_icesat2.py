@@ -51,5 +51,4 @@ for i, link in enumerate(links):
     for beam in beams:
         #vdict = {name:h5obj[f"/{beam}/{ext}"].values for name, ext in zip(names, items)}
         df = vx.from_dict({name:h5obj[f"/{beam}/{ext}"].values for name, ext in zip(names, items)})
-        print(f"{df.shape}\n")
     print(f"{dtm()} - Avg read time: {round((Time()-st)/(i+1), 3)}s", end="     \r")
