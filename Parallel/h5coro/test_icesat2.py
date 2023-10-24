@@ -7,6 +7,7 @@ import earthaccess
 import icepyx as ipx
 from time import time as Time
 import os
+import vaex as vx
 from rich import print, pretty
 pretty.install()
 
@@ -23,8 +24,8 @@ links = gran_ids[1]
 print(f"{dtm()} - Found {len(links)} granules in [bright_cyan]{round(Time() - st, 5)}[/bright_cyan]s")
 print(links[0])
 
-region.earthdata_login(s3token=True)
-credentials = region._session.get("https://data.nsidc.earthdatacloud.nasa.gov/s3credentials").json()
+auth = earthaccess.login()
+credentials = auth.get_s3_credentials(daac="NSIDC")
 credentials['aws_access_key_id'] = credentials['accessKeyId']
 credentials['aws_secret_access_key'] = credentials['secretAccessKey']
 credentials['aws_session_token'] = credentials['sessionToken']
@@ -39,6 +40,7 @@ st = Time()
 beams = ['gt1r','gt1l','gt2r','gt2l','gt3r','gt3l']
 items = ['land_ice_segments/h_li', "land_ice_segments/delta_time", "land_ice_segments/fit_statistics/dh_fit_dx", "land_ice_segments/fit_statistics/dh_fit_dy", 'land_ice_segments/ground_track/ref_azimuth','land_ice_segments/atl06_quality_summary']
 path_parts = [[f'/{beam}/{item}' for item in items] for beam in beams]
+names = ['h_li', 'time', 'dh_fit_dx', 'dh_fit_dy', 'azumith', 'quality']
 paths = []
 for prt in path_parts:
     paths.extend(prt)
@@ -46,4 +48,8 @@ for prt in path_parts:
 for i, link in enumerate(links):
     h5obj = h5coro.H5Coro(link.split(':')[-1], s3driver.S3Driver, credentials=credentials)
     h5obj.readDatasets(paths, block=True)
+    for beam in beams:
+        #vdict = {name:h5obj[f"/{beam}/{ext}"].values for name, ext in zip(names, items)}
+        df = vx.from_dict({name:h5obj[f"/{beam}/{ext}"].values for name, ext in zip(names, items)})
+        print(f"{df.shape}\n")
     print(f"{dtm()} - Avg read time: {round((Time()-st)/(i+1), 3)}s", end="     \r")
