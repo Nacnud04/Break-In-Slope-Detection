@@ -1,11 +1,15 @@
 import geopandas as gpd
+import pandas as pd
 import shapely as sp
 import numpy as np
 import vaex as vx
 import argparse
 import netCDF4 as nc
+import math
 
-from shapely.geometry import Polygon, mapping, Point
+from cartopy import crs as ccrs
+from shapely.geometry import Polygon, mapping, Point, LineString, MultiPoint
+from shapely.ops import split, unary_union
 from shapely.prepared import prep
 from rasterio.features import geometry_mask
 from time import time as Time
@@ -15,6 +19,8 @@ import icepyx as ipx
 import s3fs
 import pyproj
 import multiprocessing
+import scipy.signal as signal
+from scipy.spatial import cKDTree
 
 from rich import print, pretty
 from rich.progress import (
@@ -101,7 +107,6 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
         mshx, mshy = np.meshgrid(xarr, yarr)
         
         polygons = []
-        
         # Assuming ylen and xlen are defined somewhere in your code
         with Progress() as progress:
             task = progress.add_task(f"{dtm()} - [cyan]Mapping flow geometries...", total=(ylen - 1) * (xlen - 1))
@@ -118,7 +123,7 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
         angle = angle[:-1, :-1]
                 
         print(f"{dtm()} - Migrating into geodataframe...")
-        gdf = gpd.GeoDataFrame({'geometry': polygons, 'angle': angle.flatten()})
+        gdf = gpd.GeoDataFrame({'angle': angle.flatten()}, geometry=polygons, crs=crs())
         
         print(f"{dtm()} - Masking geodataframe...")
         gdf = gdf.clip(mask)
@@ -130,11 +135,20 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
     return gdf
 
 
+def load_gline(path, xlim, ylim):
+    data = gpd.read_file(path)
+    data = data.to_crs(crs())
+    line_strings = [LineString(p.exterior.coords) for p in data.iloc[0].geometry.geoms]
+    data = gpd.GeoDataFrame({'geometry': line_strings})
+    data = data.clip_by_rect(xlim[0], ylim[0], xlim[1], ylim[1])
+    return data
+
+
 def file_query(spt_ext, cyc):
     
     st = Time()
     # set up query object
-    region = ipx.Query("ATL06", spt_ext, cycles = cyc)
+    region = ipx.Query("ATL06", spt_ext, cycles = 5)
     # grab s3 links
     gran_ids = region.avail_granules(ids=True, cloud=True)
     links = gran_ids[1]
@@ -152,6 +166,12 @@ def gen_s3(region):
 
 def find_nearest(arr, val):
     return int((np.abs(arr-val)).argmin())
+
+
+def calc_direction(lat):
+    ascending = [1 if lat[i+1] > lat[i] else -1 for i in range(len(lat)-1)]
+    ascending.append(ascending[-1])
+    return np.array(ascending)
 
 
 def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
@@ -174,15 +194,23 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
         idymin, idymax = find_nearest(y, ylim[0]), find_nearest(y, ylim[1])
     
         
-    idmin = min(idxmin, idxmax, idymin, idymax)
-    idmax = max(idxmin, idxmax, idymin, idymax)
+    idxmin, idxmax = min(idxmin, idxmax), max(idxmin, idxmax)
+    idymin, idymax = min(idymin, idymax), max(idymin, idymax)
+    idmin = max(idxmin, idymin)
+    idmax = min(idxmax, idymax)
 
     fit_statistics = land_ice_segments["fit_statistics"]
+    dh_fit_dx = fit_statistics["dh_fit_dx"]
+    
+    # account for direction of satellite. (ascending/descending)
+    direc = calc_direction(lat[:])
+    dh_fit_dx = dh_fit_dx * direc
     
     data = {"x":x[idmin:idmax], "y":y[idmin:idmax], "time":land_ice_segments["delta_time"][idmin:idmax], 
-            "h_li":land_ice_segments["h_li"][idmin:idmax], "dh_fit_dx":fit_statistics["dh_fit_dx"][idmin:idmax], 
+            "h_li":land_ice_segments["h_li"][idmin:idmax], "dh_fit_dx":dh_fit_dx[idmin:idmax], 
             "dh_fit_dy":fit_statistics["dh_fit_dy"][idmin:idmax], 
             "azumith":land_ice_segments["ground_track"]["ref_azimuth"][idmin:idmax],
+            "ascending":direc[idmin:idmax],
             "quality":land_ice_segments["atl06_quality_summary"][idmin:idmax]}
     
     df = vx.from_dict(data)
@@ -191,48 +219,537 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
 
 
 def reduce_dfs(lasers, mask, clpbMsk=False):
-    
+    minLen = 10
     nlasers = []
     for df in lasers:
+        df = df[df["quality"] == 0] # remove points of low quality
+        # get rid of extreme or obviously incorrect points
+        df = df[(df["dh_fit_dy"] > -1) & (df["dh_fit_dy"] < 1)]
+        #df = df.dropna()
         if clpbMsk:
             keep = []
             tot = len(df)
             for i, row in df.iterrows():
                 keep.append(mask.contains(Point(row['x'], row['y'])))
-                print(f"{round(100*i/tot, 2)}", end="\r")
             df = df[keep]
-        df = df[df["quality"] == 0] # remove points of low quality
-        # get rid of extreme or obviously incorrect points
-        df = df[(df["dh_fit_dy"] > -1) & (df["dh_fit_dy"] < 1)]
         df = df.extract() # extract and filter
-        nlasers.append(df)
+        if len(df) > minLen:
+            nlasers.append(df)
     return nlasers
     
 
 
-def along_track_distance(lasers):
+def dist_azumith(lasers, GPU=False):
     
     out = []
     for df in lasers:
-        #print(f"x:{len(df['x'][:])} | y:{len(df['y'][:])}")
-        #df['x_shifted'] = df["x"]
-        #df = df.mytool.shift('x_shifted', 1)
-        #df['y_shifted'] = df["y"]
-        #df = df.mytool.shift('y_shifted', 1)
-        
-        x, y = df["x"].values, df["y"].values
-        
-        x_s = np.roll(x, 1)
-        y_s = np.roll(y, 1)
+        if not GPU:
 
-        # Calculate squared differences
-        xd2 = (x - x_s) ** 2
-        yd2 = (y - y_s) ** 2
-        
-        # Calculate the total distance as the square root of the sum of squared differences
-        df['distance'] = (xd2 + yd2) ** 0.5
-        
-        print(f"{x}\n{y}\n{df['distance'].values}")
-        out.append(df)
-    
+            x, y = df["x"].values, df["y"].values
+
+            x_s = np.roll(x, 1)
+            y_s = np.roll(y, 1)
+
+            # Calculate differences
+            dx = (x - x_s)
+            dy = (y - y_s)
+
+            # Calculate the total distance as the square root of the sum of squared differences
+            distances = ((dx**2 + dy**2) ** 0.5)/1000
+            distances[0] = 0
+            df["along_track_distance"] = np.cumsum(distances)
+            
+            # projected azumith from x and y coordinates
+            frac = [y/x if x != 0 else float('inf') for x, y in zip(dx, dy)]
+            df["azumith"] = np.arctan(frac)
+
+            out.append(df)
+
     return out
+
+
+def comp_flowslope(lasers, flowgdf, GPU=False):
+    out = []
+    for df in lasers:
+        if not GPU:
+            
+            # assign cell gdf to lasergdf
+            x, y = df['x'].values, df['y'].values
+            pddf = pd.DataFrame({'x':x,'y':y})
+            lasergdf = gpd.GeoDataFrame(pddf, geometry=[Point(x, y) for x, y in zip(x,y)], crs=crs())
+            lasergdf = lasergdf.sjoin_nearest(flowgdf, how="inner")
+            if len(df) + 1 == len(lasergdf):
+                lasergdf.drop(lasergdf.tail(1).index,inplace=True)
+            
+            slope_azumiths = df['azumith'].values
+            ascending = df['ascending'].values
+            dh_fit_dxs = df['dh_fit_dx'].values
+            
+            # gen along track vector, z component is magnitude of dh_fit_dx
+            slopevecs = [np.array([np.cos(slope_azumith), np.sin(slope_azumith), dh_fit_dx]) for slope_azumith, dh_fit_dx in zip(slope_azumiths, dh_fit_dxs)]
+            slopevecs = [slopevec / (slopevec**2).sum()**0.5 for slopevec in slopevecs]
+            
+            # gen across track vector, z component is magnitude of dh_fit_dy
+            across_slope_vecs = [np.array([math.sin(sa), -1*math.cos(sa), dhdy]) if asc==1 else np.array([-1*math.sin(sa), math.cos(sa), dhdy]) for sa, asc, dhdy in zip(slope_azumiths, ascending, df['dh_fit_dy'].values)]
+            across_slope_vecs = [across_slope_vec / (across_slope_vec**2).sum()**0.5 for across_slope_vec in across_slope_vecs]
+            
+            # gen ice flow vector, and make z component 0
+            angles = lasergdf["angle"].values
+            flowvecs = [np.array([np.cos(angle), np.sin(angle), 0]) for angle in angles]
+                                
+            # project the flow vector onto a plane crated from the along and across track slope vectors
+            slopeflowvecs = [(flowvec.dot(slopevec) / slopevec.dot(slopevec)) * slopevec + (flowvec.dot(acrossslopevec) / acrossslopevec.dot(acrossslopevec)) * acrossslopevec for slopevec, acrossslopevec, flowvec in zip(slopevecs, across_slope_vecs, flowvecs)]
+                                
+            # transform the flow vector into a slope
+            slopeflowgrade = [slopeflowvec[2] / math.sqrt(slopeflowvec[0]**2 + slopeflowvec[1]**2) for slopeflowvec in slopeflowvecs]
+                
+            df['slope'] = np.array(slopeflowgrade)
+            out.append(df)
+            
+    return out
+            
+        
+def get_intersections(lines):
+    point_intersections = []
+    line_intersections = [] #if the lines are equal the intersections is the complete line!
+    lines_len = len(lines)
+    for i in range(lines_len):
+        for j in range(i+1, lines_len): #to avoid computing twice the same intersection we do some index handling
+            l1, l2 = lines[i], lines[j]
+            if l1.intersects(l2):
+                intersection = l1.intersection(l2)
+                if isinstance(intersection, LineString):
+                    line_intersections.append(intersection)
+                elif isinstance(intersection, Point):
+                    point_intersections.append(intersection)
+                elif isinstance(intersection, MultiPoint):
+                    point_intersections.append(list(intersection.geoms))
+                else:
+                    print(intersection)
+                    raise Exception('What happened?')
+
+    return point_intersections, line_intersections
+        
+        
+def offset_by_intersect(df, points, intersects):
+    
+    try:
+        intersection = intersects[0]
+    except IndexError:
+        # no intersection found, return none
+        return None
+        
+    # Calculate the distance from the intersection to each point in the list
+    try:
+        distances = points.distance(intersection)
+    except TypeError:
+        distances = points.distance(intersection[0])
+    # Find the index of the closest point
+    cpi = distances.idxmin()
+    # Get the closest point
+    #closest_point = points.loc[cpi]
+    #dist_offset = df.evaluate('along_track_distance', i1=cpi, i2=cpi+1)
+    dist_offset = df['along_track_distance'].values[cpi]
+    df['along_dist'] = df['along_track_distance'].values - dist_offset
+    return df
+
+
+def interpolation(idx, track):
+    
+    """
+    Interpolate the dataframe over indicies based on idx
+    
+    Paramters
+    ---------
+    np.ndarray: idx
+          array of along_dist to interpolate points at (np.linspace is good for this)
+    pd.DataFrame: track
+          dataframe of track data
+          output from process_and_extract function
+          
+    Returns
+    -------
+    pd.DataFrame: df
+          interpolated data as a dataframe
+    """
+    
+    along_dist = track["along_dist"].values
+    slope_raw = np.interp(idx, along_dist, track["slope"].values)
+    h_li = np.interp(idx, along_dist, track["h_li"].values)
+    x = np.interp(idx, along_dist, track['x'].values)
+    y = np.interp(idx, along_dist, track['y'].values)
+    df = pd.DataFrame(index = idx, data = {"along_dist":idx, "slope":slope_raw, "h_li":h_li, 'x':x, 'y':y})
+    
+    return df
+
+
+def clean_by_gaps(track, df, max_dist, count):
+    
+    """
+    Removes large gaps of missing data which were interpolated over
+    
+    Parameters
+    ----------
+    pd.DataFrame: track
+          dataframe which contains all the non-interpolated track data
+    pd.DataFrame: df
+          dataframe which contains the interpolated tracl data
+    int: max_dist
+          maximum distance between two points which isnt considered a gap
+          (any larger is considered a gap)
+    int: count
+          count of all previous gaps removed.
+          
+    Returns
+    -------
+    pd.DataFrame: df
+          updated output dataframe
+    int: count
+          updated gap removal count
+    """
+    
+    along_dist = np.array(track["along_dist"].values)
+    delta_dist = np.diff(along_dist)
+    for j, delt in enumerate(delta_dist):
+        if delt > (max_dist / 1000) and j < len(delta_dist):
+            min_idx, max_idx = along_dist[j], along_dist[j + 1]
+            df.loc[(df["along_dist"] > min_idx) & (df["along_dist"] < max_idx), ["slope", "h_li"]] = None
+            print(f"Removed data from {min_idx}km to {max_idx}km of delta {delt * 1000}m", end = "           \r")
+            count += 1
+    return df, count
+    
+
+def apply_butter(series, order, cut_off):
+    b, a = signal.butter(order, cut_off, btype="lowpass")
+    series = signal.filtfilt(b, a, series)
+    return series
+    
+
+def interp_clean_single(track, fidelity):
+    
+    """
+    Cleans and interpolates a 2d array of track data
+    
+    Parameters
+    ----------
+    list: cropped
+          2d array where each item is a dataframe for a track
+    int: fidelity
+          count of how many individual points to create in the interpolation
+    int: d_min
+          minimum along track distance from the grounding line intersection
+    int: d_max
+          maximum along track distance from the grounding line intersection
+          
+    Returns
+    -------
+    list: interped
+          similar to input variable cropped.
+          contains the interpolated and cleaned data
+    np.ndarray: idx
+          values which the data is interpolated along
+    """
+    
+    d_min = track["along_dist"].min() + 0.5
+    d_max = track["along_dist"].max() - 0.5
+    track = track[(track["along_dist"] > d_min) & (track["along_dist"] < d_max)]
+    
+    idx = np.linspace(d_min, d_max, fidelity)
+
+    dx = (d_max - d_min) / fidelity
+
+    #df_full = interpolation(idx, track)
+    # remove points which were interpolated over large chunks of missing data
+    max_dist = 40 # value in meters
+    count = 0
+    df = interpolation(idx, track)
+    # apply butterworth filter
+    order = 5
+    cutoff = 0.032 # found by https://doi.org/10.5194/tc-14-3629-2020
+    df["slope-filt"] = apply_butter(df["slope"].values, order, cutoff) # uses scikit to apply the filter.
+    df, count = clean_by_gaps(track, df, max_dist, count)
+    # remove points below a certain standard deviation threshold
+    for dist in reversed(range(int(d_min * 1000), int(d_max * 1000), 100)):
+        dist /= 1000
+        sel = df[df["along_dist"] < dist]
+        if sel["slope-filt"].std() < 1e-10:
+            df.loc[df["along_dist"] < dist, ["slope-filt", "h_li"]] = None
+            break
+    #print(f"Deviation of {rgt}-{name}-{cycle}: {df['slope-filt'].std()}", end = "                                                         \r")
+    if df["slope-filt"].values.std() < 1e-10:
+        return None
+    return df
+    
+    
+def comp_deriv(series, dist):
+    derivs = []
+    for i in range(len(series) - 1):
+        deriv = (series.iloc[i + 1] - series.iloc[i]) / (dist.iloc[i + 1] - dist.iloc[i])
+        derivs.append(deriv)
+    derivs.append(derivs[-1])
+    return np.array(derivs)
+
+
+def deriv_on_gpd(gpd):
+    gpd["slope_deriv_1"] = comp_deriv(gpd["slope-filt"], gpd["along_dist"])
+    order = 5
+    cutoff = 0.3
+    gpd[f"slope_deriv_1-filt"] = apply_butter(gpd["slope_deriv_1"], order, cutoff)
+    return gpd
+
+
+def find_peaks(track, amp, dist):
+    
+    """
+    Finds peaks in the slope break
+    
+    Parameters:
+    -----------
+    pandas.DataFrame/geopandas.GeoDataFrame: track
+          Track to scan for peaks in
+    float: amp
+          Magnitude requirement to count as a peak
+    int: dist
+          Minimum distance peaks need to be apart to get detected. If multiple are within this the one with the highest magnitude is chosen.
+          
+    Returns:
+    np.ndarray: peak_dists
+          List of along track distances where peaks are.
+    """
+    
+    # find negative peaks and put into array
+    peak_index = np.array(signal.find_peaks(track["slope_deriv_1"]*-1, height=amp, distance=dist)[0])
+    # append positive peaks to array
+    peak_index = np.append(peak_index, np.array(signal.find_peaks(track["slope_deriv_1"], height=amp, distance=dist)[0]))
+    # convert indicies into along track distance
+    peak_dists = (((track["along_dist"].max() - track["along_dist"].min()) / len(track)) * peak_index) + track["along_dist"].min()
+    return peak_dists
+
+
+def nan_test(local, nan_max):
+    
+    """
+    Tests to see if track region contains too many nan values
+    
+    Parameters:
+    -----------
+    pandas.DataFrame/geopandas.GeoDataFrame: local
+          Selected region of ground track to check for nans
+    float: nan_max
+          Maximum percentage of nan values needed to return True (any greater will return false)
+    
+    Returns:
+    --------
+    bool: output
+          True/False depending on if the amount of nans in the selected region exceeded the nan_max threshold.
+    """
+    
+    nan = np.count_nonzero(np.isnan(local["slope-filt"]))
+    if nan < len(local) * nan_max:
+        return True
+    else:
+        return False
+    
+    
+def local_flowslope(local, peak):
+    
+    """
+    Finds the flowslope and the deviation of the flowslope local to a given peak
+    
+    Parameters:
+    -----------
+    pandas.DataFrame/geopandas.GeoDataFrame: local
+          Segment of full ground track local to the peak
+    float/int: peak
+          Location of the peak in question
+          
+    Returns:
+    --------
+    tuple: output
+          (flowslope, flowslope_std)
+          The flowslope, as well as the standard deviation of the flowslope in the local area.
+          All operations are performed on the low pass filtered data
+    """
+    
+    # sort dataframe by proximity to peak
+    df_sort = local.iloc[(local['along_dist']-peak).abs().argsort()[:]]
+    # compute paramters of nearest
+    flowslope = df_sort.iloc[0]['slope-filt']
+    flowslope_std = np.std(local['slope-filt'])
+    return flowslope, flowslope_std
+
+
+def comp_means(track, peak, avg_radius, avg_excl):
+    
+    """
+    Computes the left and right hand mean of flowslope local to a peak
+    
+    Parameters:
+    -----------
+    pandas.DataFrame/geopandas.GeoDataFrame: track
+          Ground track data
+    int/float: peak
+          Location of peak
+    int/float: avg_radius
+          Outward radius to compute the average under
+    int/float: avg_excl
+          Zone of exclusion around peak, to not include for the average calculation.
+          This is important as it prevents grounding zone features from skewing the results as much.
+          
+    Returns:
+    --------
+    tuple: output
+          (ahead_avg, behind_avg)
+          ahead_avg is the average flowslope along track in the + direction. behind_avg is the same in the - direction.
+    """
+    
+    along_max = peak + avg_radius
+    along_min = peak - avg_radius
+    slc = track[(track["along_dist"] > peak + avg_excl) & (track["along_dist"] < along_max)]["slope-filt"]
+    ahead_avg = None if slc.empty == True else np.nanmean(slc)
+    slc = track[(track["along_dist"] < peak - avg_excl) & (track["along_dist"] > along_min)]["slope-filt"]
+    behind_avg = None if slc.empty == True else np.nanmean(slc)
+    return ahead_avg, behind_avg
+
+
+def comp_devs(track, peak, std_radius, std_excl):
+    
+    """
+    Performs similarly to comp_means but instead with the standard deviation.
+    
+    Parameters:
+    -----------
+    pandas.DataFrame/geopandas.GeoDataFrame: track
+          Ground track data
+    int/float: peak
+          Location of peak
+    int/float: std_radius
+          Outward radius to compute the deviation under
+    int/float: std_excl
+          Zone of exclusion around peak, to not include for the deviation calculation.
+          This is important as it prevents grounding zone features from skewing the results as much.
+          
+    Returns:
+    --------
+    tuple: output
+          (ahead_std, behind_std)
+          ahead_std is the deviation of the flowslope along track in the + direction. behind_std is the same in the - direction.
+    """
+    
+    along_max = peak + std_radius
+    along_min = peak - std_radius
+    slc = track[(track["along_dist"] > peak + std_excl) & (track["along_dist"] < along_max)]["slope-filt"]
+    ahead_std = None if slc.empty == True else np.nanstd(slc)
+    slc = track[(track["along_dist"] < peak - std_excl) & (track["along_dist"] > along_min)]["slope-filt"]
+    behind_std = None if slc.empty == True else np.nanstd(slc)
+    return ahead_std, behind_std
+
+
+
+def filt_peaks(peak_dists, track,  debug=False):
+    
+    """
+    Computes the quality score and other parameters to filter the peaks on.
+    These parameters include the following: left & right standard deviation and average of flowslope, 
+    flowslope at peak, standard deviation around peak, and the quality score.
+    
+    Parameters:
+    -----------
+    list/np.ndarray: peak_dists
+          List of the along track locations where the peaks are located
+    pandas.DataFrame/geopandas.GeoDataFrame: track
+          Ground track data
+    bool: debug
+          Optional debug option. Prints helpful information for tweaking accuracy of the detection.
+          Additionally can be used to understand why the program chose the peak it did.
+          
+    Returns:
+    --------
+    pandas.DataFrame: peakdf
+          Pandas dataframe containing all the peaks and various parameters about them.
+    """
+    
+    final_peaks, int_peaks = [], []
+    peakdf = pd.DataFrame(columns=["loc", "slp", "std", "rht", "lft", "r_s", "l_s", "r_hs", "l_hs", "qs"])
+    
+    buffer = 0.5
+    nan_max = 0.05
+    avg_radius, avg_excl = 5, 0
+    std_radius, std_excl = 40, 5
+    
+    # comp track params
+    track_std = np.nanstd(np.array(track["slope"]))
+    track_avg = np.nanmean(np.array(track["slope"]))
+    
+    # test to see if each peak passes the requirements
+    for i, peak in enumerate(peak_dists):
+        local = track[(track["along_dist"] < peak + buffer) & (track["along_dist"] > peak - buffer)]
+        
+        # only keep peak if there is very few nans nearby.
+        if nan_test(local, nan_max):# and rough_test(local, track_avg, track_std):
+            # get flowslope and flowslope deviation near peak
+            flowslope, flowslope_std = local_flowslope(local, peak)
+            # compute mean both ahead & down track
+            ahead_avg, behind_avg = comp_means(track, peak, avg_radius, avg_excl)
+            # compute standard deviation up & down track
+            ahead_std, behind_std = comp_devs(track, peak, std_radius, std_excl)
+            hl_std, hr_std = None, None
+            
+            if type(ahead_std) != type(None) and type(behind_std) != type(None) and ahead_std != 0 and behind_std != 0:
+                mag_dif_std = abs(math.log(ahead_std)-math.log(behind_std)) # promote a magnitude difference between standard deviations
+                mag_dif_avg = abs(math.log(abs(ahead_avg))-math.log(abs(behind_avg))) # promote difference in mag between averages
+                #mag_dif_hstd = abs(log(hr_std) - log(hl_std))
+                dist_punish = abs(peak) / 100 # discourage giving points far from gline
+                quality_score = flowslope_std * 200 + mag_dif_std + mag_dif_avg - dist_punish #+ mag_dif_hstd
+            else:
+                quality_score = None
+            
+            # add new peak to dataframe
+            peakdf.loc[-1] = {"loc":peak, "slp":flowslope, "std":flowslope_std, "rht":ahead_avg, "lft":behind_avg, "r_s":ahead_std, "l_s":behind_std, "r_hs":hr_std, "l_hs":hl_std, "qs":quality_score}
+            peakdf.index = peakdf.index + 1
+            peakdf = peakdf.sort_index()
+            if debug == True:
+                if i == 0:
+                    print("PICKS:")
+                print(f"loc:{round(peak, 2)} slp:{round(flowslope, 4)} std:{round(flowslope_std, 6)} rht:{round(ahead_avg, 4)} lft:{round(behind_avg, 4)} r_s:{round(ahead_std, 6) if type(ahead_std) != type(None) else 'N/A'} l_s:{round(behind_std, 6) if type(behind_std) != type(None) else 'N/A'} qs:{round(quality_score, 4) if type(quality_score) != type(None) else 'N/A'}")
+                #print({"loc":peak, "slp":flowslope, "std":flowslope_std, "rht":ahead_avg, "lft":behind_avg, "r_s":ahead_std, "l_s":behind_std})
+        
+        else:
+            if debug == True:
+                print(f"Track failed nan or roughness check")
+                
+    return peakdf
+
+
+def reduce_peakdf(peakdf):
+    
+    """
+    Reduces the data frame of possible break in slope options by restricting certain parameters based on what we know about ice sheets and ice shelves.
+    
+    Parameters:
+    -----------
+    pandas.DataFrame: peakdf
+          Peak data
+    float: d_min
+          Minimum along track distance in reference to the grounding line intersection
+    float: d_max
+          Maximum along track distance in reference to the grounding line intersection
+          
+    Returns:
+    --------
+    pandas.DataFrame: reduced
+          Reduced version of peakdf
+    """
+    
+    buffer = 1
+    
+    std_min = 0.001
+    slp_min = 0.0004
+    
+    shlf_min, shlf_max = -0.001, 0.002
+    shet_max = -0.002
+    
+    reduced = peakdf[peakdf["qs"] > 2.5]
+    reduced = reduced[(reduced["rht"] <= shet_max) & (reduced["lft"] >= shlf_min) & (reduced["lft"] < shlf_max) | (reduced["rht"] >= shlf_min) & (reduced["rht"] < shlf_max) & (reduced["lft"] <= shet_max)]
+    
+    return reduced
