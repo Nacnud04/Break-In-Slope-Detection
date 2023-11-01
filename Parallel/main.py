@@ -10,11 +10,14 @@ import multiprocessing
 from datetime import datetime
 import h5py
 from rich import print, pretty
+from h5coro import h5coro, s3driver, filedriver
 
 pretty.install()
 
 from src import *
 from time import time as Time
+
+h5coro.config(errorChecking=True, verbose=False, enableAttributes=False)
 
 def dtm():
     return f'[{datetime.now().strftime("%H:%M:%S")}]'
@@ -25,30 +28,65 @@ def core_name():
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
 
-def process(link, s3, mask, flowgdf, bounds, GPU):
+def process(link, creds, mask, flowgdf, bounds, GPU):
     
     if not link:
         return None
     
     sst = Time()
     
-    # maybe one day try to convert this to vaex
-    filedata = h5py.File(s3.open(link,'rb'),'r')
-    ancillary_data = filedata["ancillary_data"]
-    rgt, region, cycle = ancillary_data["start_rgt"][0], ancillary_data["start_region"][0], ancillary_data["start_cycle"][0]
-    lasers = (filedata["gt1l"], filedata["gt1r"], filedata["gt2l"], filedata["gt2r"], filedata["gt3l"], filedata["gt3r"])
-    names = ("gt1l", "gt1r", "gt2l", "gt2r", "gt3l", "gt3r")
+    # list of paths in hdf5
+    lasers = []
+    beams = ['gt1r','gt1l','gt2r','gt2l','gt3r','gt3l']
+    items = ['land_ice_segments/latitude', 'land_ice_segments/longitude', 'land_ice_segments/h_li', "land_ice_segments/delta_time", "land_ice_segments/fit_statistics/dh_fit_dx", "land_ice_segments/fit_statistics/dh_fit_dy", 'land_ice_segments/ground_track/ref_azimuth','land_ice_segments/atl06_quality_summary']
+    path_parts = [[f'/{beam}/{item}' for item in items] for beam in beams]
+    names = ['lat', 'lon', 'h_li', 'time', 'dh_fit_dx', 'dh_fit_dy', 'azumith', 'quality', 'rgt']
     
-    # open each laser and load into vaex
-    df = None
-    nlasers = []
-    for laser, name in zip(lasers, names):
-        lst = Time()
-        df = make_laser(laser, rgt, region, cycle, name, bounds, GPU)
-        nlasers.append(df)
-        st = Time()
-    lasers = nlasers
-    del nlasers
+    # join path names
+    paths = []
+    for prt in path_parts:
+        paths.extend(prt)
+        
+    # read paths 
+    h5obj = h5coro.H5Coro(link.split(':')[-1], s3driver.S3Driver, credentials=creds)
+    h5obj.readDatasets(paths, block=True)
+
+    # generate coordinate transform
+    source_proj4 = '+proj=latlong +datum=WGS84'
+    target_proj4 = crs()
+    transformer = pyproj.Transformer.from_proj(pyproj.Proj(source_proj4), pyproj.Proj(target_proj4), always_xy=True)
+    
+    rgt = link.split("_")[2][:4] # extracts the rgt from the filename
+    cycle = link.split("_")[2][4:6]
+    
+    xlim, ylim = bounds
+    
+    for beam in beams:
+        
+        lat, lon = h5obj[f'/{beam}/land_ice_segments/latitude'].values, h5obj[f'/{beam}/land_ice_segments/longitude']
+        
+        # THIS NEEDS TO BE PUT ON A GPU
+        x, y = transformer.transform(lon[:], lat[:])
+        # find where track escapes bounding box
+        idxmin, idxmax = find_nearest(x, xlim[0]), find_nearest(x, xlim[1])
+        idymin, idymax = find_nearest(y, ylim[0]), find_nearest(y, ylim[1])
+        idxmin, idxmax = min(idxmin, idxmax), max(idxmin, idxmax)
+        idymin, idymax = min(idymin, idymax), max(idymin, idymax)
+        idmin = max(idxmin, idymin)
+        idmax = min(idxmax, idymax)
+        
+        vdict = {name:h5obj[f"/{beam}/{ext}"].values[idmin:idmax] for name, ext in zip(names, items) if name != 'lat' and name != 'lon'}
+        
+        vdict['x'] = x[idmin:idmax]
+        vdict['y'] = y[idmin:idmax]
+        
+        # find if the satellite is ascending or descending in latitude
+        vdict['ascending'] = calc_direction(lat[idmin:idmax])
+        # multiply the along track slope to account for this
+        vdict['dh_fit_dx'] *= vdict['ascending']
+        
+        lasers.append(vx.from_dict(vdict))
+        
     print(f"{dtm()} - CORE: {core_name()} - [bold]Imported[/bold] rgt {rgt} in: [bright_cyan]{round(Time()-sst, 4)}[/bright_cyan]s")
     
     # clip lasers by masks, and remove poor quality points
@@ -62,6 +100,14 @@ def process(link, s3, mask, flowgdf, bounds, GPU):
     lst = Time()
     lasers = comp_flowslope(lasers, flowgdf)
     print(f"{dtm()} - CORE: {core_name()} - Calc'd flowslope for {rgt} in [bright_cyan]{round((Time()-lst), 1)}[/bright_cyan]s")
+    
+    for laser in lasers:
+        fig, ax = plt.subplots(1, 1, figsize = (20, 4))
+        ax.plot(laser['along_track_distance'].values, laser["azumith"].values)
+        ax.set_title("dh_fit_dx along track")
+        ax.set_ylabel("Flowslope (m/m))")
+        ax.set_xlabel("Along track dist (non-datumed) (km)")
+        plt.savefig(f"out{core_name()}-{rgt}-{beam}.png")
     
     return {"rgt":rgt, "cycle":cycle, "lasers":lasers}
 
@@ -185,7 +231,7 @@ def main():
     region, links = file_query(spat_ext, cycles)
 
     # establish s3 credentials
-    s3 = gen_s3(region)
+    creds = gen_s3()
     
     batchs = len(links) / cores
     if batchs - int(batchs) != 0: batchs = int(batchs) + 1
@@ -203,7 +249,7 @@ def main():
         st = Time()
         print(f"{dtm()} - -= BATCH {batch} =-")
         links, filecounts = linkbatchs[batch], cntbatchs[batch]
-        params = [(l, s3, mask, flowslp, (xlim, ylim), GPU) for l in links]
+        params = [(l, creds, mask, flowslp, (xlim, ylim), GPU) for l in links]
 
         with multiprocessing.Pool(cores) as pool:
             dcts = pool.starmap(process, params)

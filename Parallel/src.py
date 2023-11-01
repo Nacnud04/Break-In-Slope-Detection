@@ -19,6 +19,7 @@ import icepyx as ipx
 import s3fs
 import pyproj
 import multiprocessing
+import earthaccess
 import scipy.signal as signal
 from scipy.spatial import cKDTree
 
@@ -157,11 +158,13 @@ def file_query(spt_ext, cyc):
     return region, links
     
 
-def gen_s3(region):
-    region.earthdata_login(s3token=True)
-    credentials = region._session.get("https://data.nsidc.earthdatacloud.nasa.gov/s3credentials").json()
-    s3 = s3fs.S3FileSystem(key=credentials['accessKeyId'], secret=credentials['secretAccessKey'], token=credentials['sessionToken'])
-    return s3
+def gen_s3():
+    auth = earthaccess.login()
+    credentials = auth.get_s3_credentials(daac="NSIDC")
+    credentials['aws_access_key_id'] = credentials['accessKeyId']
+    credentials['aws_secret_access_key'] = credentials['secretAccessKey']
+    credentials['aws_session_token'] = credentials['sessionToken']
+    return credentials
 
 
 def find_nearest(arr, val):
