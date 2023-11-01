@@ -81,11 +81,16 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
         vdict['y'] = y[idmin:idmax]
         
         # find if the satellite is ascending or descending in latitude
-        vdict['ascending'] = calc_direction(lat[idmin:idmax])
+        try:
+            vdict['ascending'] = calc_direction(lat[idmin:idmax])
+        except IndexError:
+            continue
         # multiply the along track slope to account for this
         vdict['dh_fit_dx'] *= vdict['ascending']
+        vdict['geometry'] = [Point(x,y) for x,y in zip(vdict['x'], vdict['y'])]
         
-        lasers.append(pd.DataFrame(vdict))
+        #lasers.append(pd.DataFrame(vdict))
+        lasers.append(gpd.GeoDataFrame(vdict, crs=crs()))
         
     print(f"{dtm()} - CORE: {core_name()} - [bold]Imported[/bold] rgt {rgt}-{beams} in: [bright_cyan]{round(Time()-sst, 4)}[/bright_cyan]s")
     
@@ -99,7 +104,7 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
     lst = Time()
     lasers, beams = comp_flowslope(lasers, beams, flowgdf)
     print(f"{dtm()} - CORE: {core_name()} - Calc'd flowslope for {rgt}-{beams} in [bright_cyan]{round((Time()-lst), 1)}[/bright_cyan]s")
-    
+    """
     for laser, beam in zip(lasers, beams):
         fig, ax = plt.subplots(1, 1, figsize = (20, 4))
         ax.plot(laser['along_track_distance'], laser["slope"])
@@ -107,7 +112,7 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
         ax.set_ylabel("Flowslope (m/m))")
         ax.set_xlabel("Along track dist (non-datumed) (km)")
         plt.savefig(f"out{core_name()}-{rgt}-{beam}.png")
-    
+    """
     return {"rgt":rgt, "cycle":cycle, "lasers":lasers}
 
 
@@ -121,11 +126,12 @@ def find_gline(dct, gline):
     # iterate through each laser, finding intersection of each track and adding offset
     ib = []
     for laser in lasers:
-        xs, ys = laser['x'].values, laser['y'].values
-        xys = np.vstack((xs, ys)).T
-        gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
-        pi, li = get_intersections([LineString(xys), gline.iloc[0]])
-        laser = offset_by_intersect(laser, gdf_points, pi)
+        #xs, ys = laser['x'], laser['y']
+        #xys = np.vstack((xs, ys)).T
+        #gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
+        #pi, li = get_intersections([LineString(xys), gline.iloc[0]])
+        #laser = offset_by_intersect(laser, pi)
+        laser, gline = find_gline_int(laser, gline)
         if type(laser) == type(None):
             continue
         laser = interp_clean_single(laser, 5000)
@@ -136,8 +142,7 @@ def find_gline(dct, gline):
         fill = 0.66
         nonnan = np.count_nonzero(~np.isnan(laser["slope-filt"]))
         if nonnan < len(laser["slope-filt"]) * fill:
-            if debug:
-                print(f"Nan count of track too high {nonnan} < {len(track['slope-filt']) * fill}")
+            print(f"Nan count of track too high {nonnan} < {len(laser['slope-filt']) * fill}")
             return None
 
         # take deriv
@@ -252,7 +257,8 @@ def main():
 
         with multiprocessing.Pool(cores) as pool:
             dcts = pool.starmap(process, params)
-            
+        print(type(gline))
+        print(gline.keys())
         print(f"{dtm()} - [italic bold yellow]Hunting for gline intersection[/italic bold yellow]")
         params = [(dct, gline) for dct in dcts]
         with multiprocessing.Pool(cores) as pool:
@@ -264,7 +270,7 @@ def main():
         range_cnt = 20
 
         ax.set_facecolor("gainsboro")
-        gline.plot(ax=ax, color="black")
+        lsgline.plot(ax=ax, color="black")
         
         for ib in allibs:
             ax.scatter(ib[0], ib[1], color="red", s = 3)

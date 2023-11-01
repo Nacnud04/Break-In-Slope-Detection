@@ -137,6 +137,7 @@ def load_flowslope(filepath, mask, xlim, ylim, gpu):
 
 
 def load_gline(path, xlim, ylim):
+    xs, ys = [], []
     data = gpd.read_file(path)
     data = data.to_crs(crs())
     line_strings = [LineString(p.exterior.coords) for p in data.iloc[0].geometry.geoms]
@@ -338,7 +339,7 @@ def get_intersections(lines):
     return point_intersections, line_intersections
         
         
-def offset_by_intersect(df, points, intersects):
+def offset_by_intersect(df, intersects):
     
     try:
         intersection = intersects[0]
@@ -348,17 +349,157 @@ def offset_by_intersect(df, points, intersects):
         
     # Calculate the distance from the intersection to each point in the list
     try:
-        distances = points.distance(intersection)
+        distances = df.distance(intersection)
     except TypeError:
-        distances = points.distance(intersection[0])
+        distances = df.distance(intersection[0])
     # Find the index of the closest point
     cpi = distances.idxmin()
     # Get the closest point
     #closest_point = points.loc[cpi]
     #dist_offset = df.evaluate('along_track_distance', i1=cpi, i2=cpi+1)
-    dist_offset = df['along_track_distance'].values[cpi]
-    df['along_dist'] = df['along_track_distance'].values - dist_offset
+    dist_offset = df['along_track_distance'].iloc[cpi]
+    df['along_dist'] = df['along_track_distance'] - dist_offset
     return df
+
+
+def find_gline_int(single_beam, gline_xy, verbose=True):
+    
+    """
+    Locates the intersection of the single_beam geodataframe and the gline_xy dataframe
+    
+    Parameters:
+    -----------
+    gdf.GeoDataFrame: single_beam
+          This is the dataframe either extracted from extract_data() or returned by compute_along_track_dist()
+    pd.DataFrame: gline_xy
+          The grounding line x & y values in EPSG:3031 as returned by gline_to_df
+    bool: verbose
+          Prints some helpful information for debugging
+          
+    Returns:
+    --------
+    gdf.GeoDataFrame: single_beam
+          Identical to single_beam input except with the "along_dist" column centered around
+          the grounding line
+    sp.Geometry.LineString: gline
+          Shapely linestring of the grounding line.
+    """
+    
+    track_maxx, track_minx = single_beam["x"].max(), single_beam["x"].min()
+    track_maxy, track_miny = single_beam["y"].max(), single_beam["y"].min()
+    
+    # Hunt for intersect w/ gline
+    
+    # prepare gline
+    gline_xy = gline_xy[(gline_xy["x"] < track_maxx) & (gline_xy["x"] > track_minx)]
+    gline_xy = gline_xy[(gline_xy["y"] < track_maxy) & (gline_xy["y"] > track_miny)]
+    
+    gline_x, gline_y = np.array(gline_xy["x"]), np.array(gline_xy["y"])
+    gline_delt = (np.diff(gline_x)**2 + np.diff(gline_y)**2)**0.5
+    breaks = [i for i, delt in enumerate(gline_delt) if delt > 10000]
+    
+    xs = np.split(gline_x, breaks)
+    ys = np.split(gline_y, breaks)
+    
+    if len(xs) != 0:
+        segments = []
+        for i in range(len(xs)): 
+            if len(xs[i]) >= 2:
+                gline_np = np.vstack((xs[i], ys[i])).T
+                segments.append(sp.geometry.LineString(gline_np))
+    else:
+        if verbose:
+            print("Cannot form into line segment. Gline intersection algorithm failure")
+        return None
+    
+    if len(gline_x) < 2:
+        return None
+    
+    full_gline = sp.geometry.LineString(np.vstack((gline_x, gline_y)).T)
+    
+    track_maxx, track_minx = single_beam["x"].max(), single_beam["x"].min()
+    track_maxy, track_miny = single_beam["y"].max(), single_beam["y"].min()
+    track_np = np.vstack((single_beam["x"], single_beam["y"]))
+    track = sp.geometry.LineString(track_np.T)
+    
+    for segment in segments:
+        intersect = segment.intersection(track)
+        if type(intersect) == sp.geometry.Point:
+            x_int, y_int = intersect.xy
+            x_int, y_int = x_int[0], y_int[0]
+            gline = segment
+            break
+        elif type(intersect) == sp.geometry.MultiPoint:
+            x_int, y_int = intersect.geoms[0].xy
+            x_int, y_int = x_int[0], y_int[0]
+            gline = segment
+            break
+        elif type(intersect) == sp.geometry.LineString: 
+            x_int, y_int = False, False
+            if verbose:
+                print(f"No intersection found!")
+                #print(find_gline_dist(single_beam, full_gline))
+            #return None
+            
+    if len(segments) < 1:
+        return None
+            
+    if x_int == False:
+        return None
+        
+    if verbose:
+        print(f"Found intersection at: {x_int},{y_int}")
+        
+    track_np = track_np.T
+    
+    direc_x, direc_y = [], []
+    
+    i = 0
+    while i < len(track_np) - 1:
+        if track_np[i, 0] < track_np[i+1, 0]:
+            direc_x.append(1)
+        else:
+            direc_x.append(-1)
+        if track_np[i, 1] < track_np[i + 1, 1]:
+            direc_y.append(1)
+        else:
+            direc_y.append(-1)                
+        i += 1
+
+    direc_x.append(direc_x[-1])
+    direc_y.append(direc_y[-1])
+
+    single_beam["direc_x"] = direc_x
+    single_beam["direc_y"] = direc_y
+
+    # get closest point
+    out = sp.ops.nearest_points(sp.geometry.MultiPoint(track_np), gline)
+    point, gline_nearest = out
+    row = single_beam[single_beam["x"] == point.x].iloc[0]
+
+    single_beam_clipped = single_beam
+
+    if row["direc_x"] == 1:
+        single_beam_clipped = single_beam_clipped[single_beam_clipped["x"] < x_int]
+    else:
+        single_beam_clipped = single_beam_clipped[single_beam_clipped["x"] > x_int]
+
+    if row["direc_y"] == 1:
+        single_beam_clipped = single_beam_clipped[single_beam_clipped["y"] < y_int]
+    else:
+        single_beam_clipped = single_beam_clipped[single_beam_clipped["y"] > y_int]
+
+    last_point = single_beam_clipped.iloc[-1]
+
+    int_dist = (((last_point["x"] - x_int)**2 + (last_point["y"] - y_int)**2)**0.5) / 1000 + row["along_dist"]
+    
+    if verbose:
+        print(f"Along track dist @ intersection {int_dist}")
+    
+    # offset the along track distance, to be 0 at the gline.
+    single_beam["along_dist"] = single_beam["along_dist"] - int_dist
+    
+    return single_beam, gline
 
 
 def interpolation(idx, track):
