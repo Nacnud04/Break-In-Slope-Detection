@@ -221,31 +221,27 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
     return df
 
 
-def reduce_dfs(lasers, mask, clpbMsk=False):
+def reduce_dfs(lasers, beams, mask):
     minLen = 10
     nlasers = []
-    for df in lasers:
+    bs = []
+    for df, b in zip(lasers, beams):
         df = df[df["quality"] == 0] # remove points of low quality
         # get rid of extreme or obviously incorrect points
         df = df[(df["dh_fit_dy"] > -1) & (df["dh_fit_dy"] < 1)]
-        #df = df.dropna()
-        if clpbMsk:
-            keep = []
-            tot = len(df)
-            for i, row in df.iterrows():
-                keep.append(mask.contains(Point(row['x'], row['y'])))
-            df = df[keep]
-        df = df.extract() # extract and filter
+        df = df.dropna()
         if len(df) > minLen:
             nlasers.append(df)
-    return nlasers
+            bs.append(b)
+    return nlasers, bs
     
 
 
-def dist_azumith(lasers, GPU=False):
+def dist_azumith(lasers, beams, GPU=False):
     
     out = []
-    for df in lasers:
+    bs = []
+    for df, b in zip(lasers, beams):
         if not GPU:
 
             x, y = df["x"].values, df["y"].values
@@ -267,13 +263,15 @@ def dist_azumith(lasers, GPU=False):
             df["azumith"] = np.arctan(frac)
 
             out.append(df)
+            bs.append(b)
 
-    return out
+    return out, bs
 
 
-def comp_flowslope(lasers, flowgdf, GPU=False):
+def comp_flowslope(lasers, beams, flowgdf, GPU=False):
     out = []
-    for df in lasers:
+    bs = []
+    for df, b in zip(lasers, beams):
         if not GPU:
             
             # assign cell gdf to lasergdf
@@ -306,10 +304,16 @@ def comp_flowslope(lasers, flowgdf, GPU=False):
             # transform the flow vector into a slope
             slopeflowgrade = [slopeflowvec[2] / math.sqrt(slopeflowvec[0]**2 + slopeflowvec[1]**2) for slopeflowvec in slopeflowvecs]
                 
-            df['slope'] = np.array(slopeflowgrade)
-            out.append(df)
             
-    return out
+            df['slope'] = np.array(slopeflowgrade)
+            
+            # apply a rolling average
+            df["slope"] = df["slope"].rolling(5).mean()
+            
+            out.append(df)
+            bs.append(b)
+            
+    return out, bs
             
         
 def get_intersections(lines):

@@ -85,25 +85,24 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
         # multiply the along track slope to account for this
         vdict['dh_fit_dx'] *= vdict['ascending']
         
-        lasers.append(vx.from_dict(vdict))
+        lasers.append(pd.DataFrame(vdict))
         
-    print(f"{dtm()} - CORE: {core_name()} - [bold]Imported[/bold] rgt {rgt} in: [bright_cyan]{round(Time()-sst, 4)}[/bright_cyan]s")
+    print(f"{dtm()} - CORE: {core_name()} - [bold]Imported[/bold] rgt {rgt}-{beams} in: [bright_cyan]{round(Time()-sst, 4)}[/bright_cyan]s")
     
     # clip lasers by masks, and remove poor quality points
     lst = Time()
-    lasers = reduce_dfs(lasers, mask, clpbMsk=False)
-
-    print(f"{dtm()} - CORE: {core_name()} - Clipped rgt: {rgt} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
+    lasers, beams = reduce_dfs(lasers, beams, mask)
+    print(f"{dtm()} - CORE: {core_name()} - Clipped rgt: {rgt}-{beams} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
     lst = Time()
-    lasers = dist_azumith(lasers)
-    print(f"{dtm()} - CORE: {core_name()} - Calc'd atd & azumith for {rgt} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
+    lasers, beams = dist_azumith(lasers, beams)
+    print(f"{dtm()} - CORE: {core_name()} - Calc'd atd & azumith for {rgt}-{beams} in [bright_cyan]{round((Time()-lst)*(10**3), 1)}[/bright_cyan]ms")
     lst = Time()
-    lasers = comp_flowslope(lasers, flowgdf)
-    print(f"{dtm()} - CORE: {core_name()} - Calc'd flowslope for {rgt} in [bright_cyan]{round((Time()-lst), 1)}[/bright_cyan]s")
+    lasers, beams = comp_flowslope(lasers, beams, flowgdf)
+    print(f"{dtm()} - CORE: {core_name()} - Calc'd flowslope for {rgt}-{beams} in [bright_cyan]{round((Time()-lst), 1)}[/bright_cyan]s")
     
-    for laser in lasers:
+    for laser, beam in zip(lasers, beams):
         fig, ax = plt.subplots(1, 1, figsize = (20, 4))
-        ax.plot(laser['along_track_distance'].values, laser["azumith"].values)
+        ax.plot(laser['along_track_distance'], laser["slope"])
         ax.set_title("dh_fit_dx along track")
         ax.set_ylabel("Flowslope (m/m))")
         ax.set_xlabel("Along track dist (non-datumed) (km)")
@@ -127,7 +126,7 @@ def find_gline(dct, gline):
         gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
         pi, li = get_intersections([LineString(xys), gline.iloc[0]])
         laser = offset_by_intersect(laser, gdf_points, pi)
-        if not laser:
+        if type(laser) == type(None):
             continue
         laser = interp_clean_single(laser, 5000)
         if type(laser) == type(None):
