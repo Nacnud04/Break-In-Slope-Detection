@@ -104,19 +104,12 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
     lst = Time()
     lasers, beams = comp_flowslope(lasers, beams, flowgdf)
     print(f"{dtm()} - CORE: {core_name()} - Calc'd flowslope for {rgt}-{beams} in [bright_cyan]{round((Time()-lst), 1)}[/bright_cyan]s")
-    """
-    for laser, beam in zip(lasers, beams):
-        fig, ax = plt.subplots(1, 1, figsize = (20, 4))
-        ax.plot(laser['along_track_distance'], laser["slope"])
-        ax.set_title("dh_fit_dx along track")
-        ax.set_ylabel("Flowslope (m/m))")
-        ax.set_xlabel("Along track dist (non-datumed) (km)")
-        plt.savefig(f"out{core_name()}-{rgt}-{beam}.png")
-    """
     return {"rgt":rgt, "cycle":cycle, "lasers":lasers}
 
 
 def find_gline(dct, gline):
+    
+    beams = ['gt1r','gt1l','gt2r','gt2l','gt3r','gt3l']
     
     try :
         rgt, cycle, lasers = dct['rgt'], dct['cycle'], dct['lasers']
@@ -126,12 +119,25 @@ def find_gline(dct, gline):
     # iterate through each laser, finding intersection of each track and adding offset
     ib = []
     for laser in lasers:
-        #xs, ys = laser['x'], laser['y']
-        #xys = np.vstack((xs, ys)).T
-        #gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
-        #pi, li = get_intersections([LineString(xys), gline.iloc[0]])
-        #laser = offset_by_intersect(laser, pi)
-        laser, gline = find_gline_int(laser, gline)
+        xs, ys = laser['x'], laser['y']
+        xys = np.vstack((xs, ys)).T
+        gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
+        pi, li = get_intersections([LineString(xys), gline.iloc[0]])
+        if type(pi[0]) == list:
+            pi = pi[0]
+        laser = offset_by_intersect(laser, pi)
+        
+    for laser, beam in zip(lasers, beams):
+        fig, ax = plt.subplots(1, 1, figsize = (20, 4))
+        
+        ax.plot(laser['along_track_distance'], laser["slope"])
+        ax.set_title("dh_fit_dx along track")
+        ax.set_ylabel("Flowslope (m/m))")
+        ax.set_xlabel("Along track dist (non-datumed) (km)")
+        plt.savefig(f"out{core_name()}-{rgt}-{beam}.png")
+    
+    for laser in lasers:
+        #laser, gline = find_gline_int(laser, gline)
         if type(laser) == type(None):
             continue
         laser = interp_clean_single(laser, 5000)
@@ -178,7 +184,7 @@ def find_gline(dct, gline):
             peak = final_peaks.iloc[0]["loc"]
             qs = final_peaks.iloc[0]["qs"]
             
-            nearest_id = find_nearest(laser["along_dist"], peak)
+            nearest_id = find_nearest(laser["along_track_distance"], peak)
             ib.append((laser.iloc[nearest_id]["x"], laser.iloc[nearest_id]["y"]))
             print(f"Ib @ {xys[-1]}")
 
@@ -189,14 +195,6 @@ def find_gline(dct, gline):
             
             return None
             
-        """
-        fig, ax = plt.subplots(1, 1, figsize = (20, 4))
-        ax.plot(laser["along_dist"].values, laser["slope-filt"].values)
-        ax.set_title("Flowslope along track")
-        ax.set_ylabel("Flowslope (m/m))")
-        ax.set_xlabel("Along track dist (non-datumed) (km)")
-        plt.savefig(f"out{core_name()}.png")
-        """
         return ib
 
 
@@ -270,7 +268,7 @@ def main():
         range_cnt = 20
 
         ax.set_facecolor("gainsboro")
-        lsgline.plot(ax=ax, color="black")
+        gline.plot(ax=ax, color="black")
         
         for ib in allibs:
             ax.scatter(ib[0], ib[1], color="red", s = 3)

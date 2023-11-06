@@ -339,26 +339,29 @@ def get_intersections(lines):
     return point_intersections, line_intersections
         
         
+def get_intersect_dist(df, intersects, index):
+    xi, yi = intersects[index].xy    
+    # Calculate the distance from the intersection to each point in the list
+    row = df.iloc[0] # capture row 1 
+    x, y = row['x'], row['y']
+    distance = ((x-xi)**2+(y-yi)**2)**0.5
+    distance = distance / 1000
+    return distance
+        
+        
 def offset_by_intersect(df, intersects):
     
-    try:
-        intersection = intersects[0]
-    except IndexError:
-        # no intersection found, return none
-        return None
-        
-    # Calculate the distance from the intersection to each point in the list
-    try:
-        distances = df.distance(intersection)
-    except TypeError:
-        distances = df.distance(intersection[0])
-    # Find the index of the closest point
-    cpi = distances.idxmin()
-    # Get the closest point
-    #closest_point = points.loc[cpi]
-    #dist_offset = df.evaluate('along_track_distance', i1=cpi, i2=cpi+1)
-    dist_offset = df['along_track_distance'].iloc[cpi]
-    df['along_dist'] = df['along_track_distance'] - dist_offset
+    for i in range(len(intersects)):
+        # the following line is not necessary but it will produce results consistent
+        # with that of the non-parallel process
+        intersects = np.flip(intersects) 
+        distance = get_intersect_dist(df, intersects, i)
+        if distance >= 15 and distance <= df['along_track_distance'].iloc[-1] - 20:
+            break
+    # in theory distance should be approximately the distance of the along track distance at the
+    # point of intersection. therefore distance can be subtracted from the along track dist
+    print(f"{dtm()} - CORE: {core_name()} - Along track offset: {distance}")
+    df['along_track_distance'] = df['along_track_distance'] - distance
     return df
 
 
@@ -521,12 +524,12 @@ def interpolation(idx, track):
           interpolated data as a dataframe
     """
     
-    along_dist = track["along_dist"].values
+    along_dist = track["along_track_distance"].values
     slope_raw = np.interp(idx, along_dist, track["slope"].values)
     h_li = np.interp(idx, along_dist, track["h_li"].values)
     x = np.interp(idx, along_dist, track['x'].values)
     y = np.interp(idx, along_dist, track['y'].values)
-    df = pd.DataFrame(index = idx, data = {"along_dist":idx, "slope":slope_raw, "h_li":h_li, 'x':x, 'y':y})
+    df = pd.DataFrame(index = idx, data = {"along_track_distance":idx, "slope":slope_raw, "h_li":h_li, 'x':x, 'y':y})
     
     return df
 
@@ -556,12 +559,12 @@ def clean_by_gaps(track, df, max_dist, count):
           updated gap removal count
     """
     
-    along_dist = np.array(track["along_dist"].values)
+    along_dist = np.array(track["along_track_distance"].values)
     delta_dist = np.diff(along_dist)
     for j, delt in enumerate(delta_dist):
         if delt > (max_dist / 1000) and j < len(delta_dist):
             min_idx, max_idx = along_dist[j], along_dist[j + 1]
-            df.loc[(df["along_dist"] > min_idx) & (df["along_dist"] < max_idx), ["slope", "h_li"]] = None
+            df.loc[(df["along_track_distance"] > min_idx) & (df["along_track_distance"] < max_idx), ["slope", "h_li"]] = None
             print(f"Removed data from {min_idx}km to {max_idx}km of delta {delt * 1000}m", end = "           \r")
             count += 1
     return df, count
@@ -598,9 +601,9 @@ def interp_clean_single(track, fidelity):
           values which the data is interpolated along
     """
     
-    d_min = track["along_dist"].min() + 0.5
-    d_max = track["along_dist"].max() - 0.5
-    track = track[(track["along_dist"] > d_min) & (track["along_dist"] < d_max)]
+    d_min = track["along_track_distance"].min() + 0.5
+    d_max = track["along_track_distance"].max() - 0.5
+    track = track[(track["along_track_distance"] > d_min) & (track["along_track_distance"] < d_max)]
     
     idx = np.linspace(d_min, d_max, fidelity)
 
@@ -619,9 +622,9 @@ def interp_clean_single(track, fidelity):
     # remove points below a certain standard deviation threshold
     for dist in reversed(range(int(d_min * 1000), int(d_max * 1000), 100)):
         dist /= 1000
-        sel = df[df["along_dist"] < dist]
+        sel = df[df["along_track_distance"] < dist]
         if sel["slope-filt"].std() < 1e-10:
-            df.loc[df["along_dist"] < dist, ["slope-filt", "h_li"]] = None
+            df.loc[df["along_track_distance"] < dist, ["slope-filt", "h_li"]] = None
             break
     #print(f"Deviation of {rgt}-{name}-{cycle}: {df['slope-filt'].std()}", end = "                                                         \r")
     if df["slope-filt"].values.std() < 1e-10:
@@ -639,7 +642,7 @@ def comp_deriv(series, dist):
 
 
 def deriv_on_gpd(gpd):
-    gpd["slope_deriv_1"] = comp_deriv(gpd["slope-filt"], gpd["along_dist"])
+    gpd["slope_deriv_1"] = comp_deriv(gpd["slope-filt"], gpd["along_track_distance"])
     order = 5
     cutoff = 0.3
     gpd[f"slope_deriv_1-filt"] = apply_butter(gpd["slope_deriv_1"], order, cutoff)
@@ -670,7 +673,7 @@ def find_peaks(track, amp, dist):
     # append positive peaks to array
     peak_index = np.append(peak_index, np.array(signal.find_peaks(track["slope_deriv_1"], height=amp, distance=dist)[0]))
     # convert indicies into along track distance
-    peak_dists = (((track["along_dist"].max() - track["along_dist"].min()) / len(track)) * peak_index) + track["along_dist"].min()
+    peak_dists = (((track["along_track_distance"].max() - track["along_track_distance"].min()) / len(track)) * peak_index) + track["along_track_distance"].min()
     return peak_dists
 
 
@@ -720,7 +723,7 @@ def local_flowslope(local, peak):
     """
     
     # sort dataframe by proximity to peak
-    df_sort = local.iloc[(local['along_dist']-peak).abs().argsort()[:]]
+    df_sort = local.iloc[(local['along_track_distance']-peak).abs().argsort()[:]]
     # compute paramters of nearest
     flowslope = df_sort.iloc[0]['slope-filt']
     flowslope_std = np.std(local['slope-filt'])
@@ -753,9 +756,9 @@ def comp_means(track, peak, avg_radius, avg_excl):
     
     along_max = peak + avg_radius
     along_min = peak - avg_radius
-    slc = track[(track["along_dist"] > peak + avg_excl) & (track["along_dist"] < along_max)]["slope-filt"]
+    slc = track[(track["along_track_distance"] > peak + avg_excl) & (track["along_track_distance"] < along_max)]["slope-filt"]
     ahead_avg = None if slc.empty == True else np.nanmean(slc)
-    slc = track[(track["along_dist"] < peak - avg_excl) & (track["along_dist"] > along_min)]["slope-filt"]
+    slc = track[(track["along_track_distance"] < peak - avg_excl) & (track["along_track_distance"] > along_min)]["slope-filt"]
     behind_avg = None if slc.empty == True else np.nanmean(slc)
     return ahead_avg, behind_avg
 
@@ -786,9 +789,9 @@ def comp_devs(track, peak, std_radius, std_excl):
     
     along_max = peak + std_radius
     along_min = peak - std_radius
-    slc = track[(track["along_dist"] > peak + std_excl) & (track["along_dist"] < along_max)]["slope-filt"]
+    slc = track[(track["along_track_distance"] > peak + std_excl) & (track["along_track_distance"] < along_max)]["slope-filt"]
     ahead_std = None if slc.empty == True else np.nanstd(slc)
-    slc = track[(track["along_dist"] < peak - std_excl) & (track["along_dist"] > along_min)]["slope-filt"]
+    slc = track[(track["along_track_distance"] < peak - std_excl) & (track["along_track_distance"] > along_min)]["slope-filt"]
     behind_std = None if slc.empty == True else np.nanstd(slc)
     return ahead_std, behind_std
 
@@ -831,7 +834,7 @@ def filt_peaks(peak_dists, track,  debug=False):
     
     # test to see if each peak passes the requirements
     for i, peak in enumerate(peak_dists):
-        local = track[(track["along_dist"] < peak + buffer) & (track["along_dist"] > peak - buffer)]
+        local = track[(track["along_track_distance"] < peak + buffer) & (track["along_track_distance"] > peak - buffer)]
         
         # only keep peak if there is very few nans nearby.
         if nan_test(local, nan_max):# and rough_test(local, track_avg, track_std):
