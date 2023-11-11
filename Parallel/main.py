@@ -22,8 +22,9 @@ h5coro.config(errorChecking=True, verbose=False, enableAttributes=False)
 def dtm():
     return f'[{datetime.now().strftime("%H:%M:%S")}]'
 
+cores = multiprocessing.cpu_count()
 def core_name():
-    return int(multiprocessing.current_process().name.split('-')[-1]) % 4
+    return int(multiprocessing.current_process().name.split('-')[-1]) % cores
 
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
@@ -118,25 +119,24 @@ def find_gline(dct, gline):
     
     # iterate through each laser, finding intersection of each track and adding offset
     ib = []
-    for laser in lasers:
+    names = []
+    for laser, beam in zip(lasers, beams):
         xs, ys = laser['x'], laser['y']
         xys = np.vstack((xs, ys)).T
         gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
         pi, li = get_intersections([LineString(xys), gline.iloc[0]])
-        if type(pi[0]) == list:
-            pi = pi[0]
+        try:
+            if type(pi[0]) == list:
+                pi = pi[0]
+        except IndexError:
+            # this is where we would pull a point on the line intersection
+            # and/or check if no intersections exist
+            print(f"{dtm()} - CORE: {core_name()} - [bold red]WARNING:[/bold red] [red]No valid point intersections found[/red]")
+            continue
         laser = offset_by_intersect(laser, pi)
         
-    for laser, beam in zip(lasers, beams):
-        fig, ax = plt.subplots(1, 1, figsize = (20, 4))
+        print(f"{dtm()} - CORE: {core_name()} - Found intersection and offset for {rgt}-{beam}")
         
-        ax.plot(laser['along_track_distance'], laser["slope"])
-        ax.set_title("dh_fit_dx along track")
-        ax.set_ylabel("Flowslope (m/m))")
-        ax.set_xlabel("Along track dist (non-datumed) (km)")
-        plt.savefig(f"out{core_name()}-{rgt}-{beam}.png")
-    
-    for laser in lasers:
         #laser, gline = find_gline_int(laser, gline)
         if type(laser) == type(None):
             continue
@@ -148,11 +148,13 @@ def find_gline(dct, gline):
         fill = 0.66
         nonnan = np.count_nonzero(~np.isnan(laser["slope-filt"]))
         if nonnan < len(laser["slope-filt"]) * fill:
-            print(f"Nan count of track too high {nonnan} < {len(laser['slope-filt']) * fill}")
-            return None
+            print(f"{dtm()} - CORE: {core_name()} - [bold red]WARNING:[/bold red] [red]Nan count of track too high {nonnan} < {len(laser['slope-filt']) * fill}[/red]")
+            continue
 
         # take deriv
         laser = deriv_on_gpd(laser)
+        
+        print(f"{dtm()} - CORE: {core_name()} - Computed derivative of {rgt}-{beam}")
 
         slope_breaks = [0.003, 0.002, 0.001, 0.0005, 0.0001]
         for thresh in slope_breaks:
@@ -160,8 +162,9 @@ def find_gline(dct, gline):
             peak_dists = find_peaks(laser, thresh, 400)
             if len(peak_dists) > 3:
                 break
-
-                
+        
+        print(f"{dtm()} - CORE: {core_name()} - Found peaks of {rgt}-{beam}")
+        
         debug=False
                 
         # filt peaks
@@ -186,21 +189,19 @@ def find_gline(dct, gline):
             
             nearest_id = find_nearest(laser["along_track_distance"], peak)
             ib.append((laser.iloc[nearest_id]["x"], laser.iloc[nearest_id]["y"]))
-            print(f"Ib @ {xys[-1]}")
+            names.append(f"{rgt}-{beam}")
+            print(f"{dtm()} - CORE: {core_name()} - [bold green]Found Ib of[/bold green] {rgt}-{beam} @ x:{ib[-1][0]} y:{ib[-1][1]}")
 
             if debug:
                 print(f"CHOICE:\n {peak} <-> {ib}")
-        
-        else:
             
-            return None
-            
-        return ib
+    return {"ib":ib, "names":names}
 
 
 def main():
 
     allibs = []
+    allnames=[]
     
     # import arguments and parse arguments
     parser = argparse.ArgumentParser()
@@ -237,11 +238,11 @@ def main():
     
     batchs = len(links) / cores
     if batchs - int(batchs) != 0: batchs = int(batchs) + 1
-    missing = 4 * batchs - len(links)
+    missing = cores * batchs - len(links)
     for i in range(missing): links.append(None)
     
-    linkbatchs = np.reshape(links, (batchs, 4))
-    cntbatchs = np.reshape(range(1, len(links)+1), (batchs, 4))
+    linkbatchs = np.reshape(links, (batchs, cores))
+    cntbatchs = np.reshape(range(1, len(links)+1), (batchs, cores))
     
     multiprocessing.set_start_method("spawn", force=False)
 
@@ -255,14 +256,22 @@ def main():
 
         with multiprocessing.Pool(cores) as pool:
             dcts = pool.starmap(process, params)
-        print(type(gline))
-        print(gline.keys())
         print(f"{dtm()} - [italic bold yellow]Hunting for gline intersection[/italic bold yellow]")
         params = [(dct, gline) for dct in dcts]
         with multiprocessing.Pool(cores) as pool:
             ibs = pool.starmap(find_gline, params)
-        ibs_c = [i[0] for i in ibs if i is not None]
-        allibs.extend(ibs_c)
+        ibs = [dct['ib'] for dct in dcts]
+        names = [dct['names'] for dct in dcts]
+        for name in names:
+            allnames.extend(name)
+        # remove Nan results
+        ibs = [i for i in ibs if i is not None]
+        # remove arrays with no values returned
+        ibs = [i for i in ibs if len(i) > 0]
+        ibs_f = []
+        for i in ibs:
+            ibs_f.extend(i)
+        allibs.extend(ibs_f)
             
         fig, ax = plt.subplots(1, 1, figsize = (10, 10))
         range_cnt = 20
@@ -270,8 +279,9 @@ def main():
         ax.set_facecolor("gainsboro")
         gline.plot(ax=ax, color="black")
         
-        for ib in allibs:
+        for ib, name in zip(allibs, names):
             ax.scatter(ib[0], ib[1], color="red", s = 3)
+            ax.text(ib[0], ib[1], s=name)
 
         ax.set_title("Map of track, slope break, and ice plain")
         ax.set_aspect('equal', adjustable='box')
@@ -286,4 +296,11 @@ def main():
         print(f"{dtm()} - -= BATCH TIME: {round(Time() - st, 4)} =-")
     
 if __name__ == "__main__":
+    begin_time = Time()
     main()
+    tot_time = Time() - begin_time
+    h = int(tot_time / 3600)
+    m = int((tot_time - h * 3600) / 60)
+    s = int(tot_time - (h * 3600 + m * 60))
+    print(f"{dtm()} - [bold yellow]TOTAL PROCESSING TIME:[/bold yellow]")
+    print(f"{h}h {m}m {s}s")

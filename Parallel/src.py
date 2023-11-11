@@ -40,8 +40,9 @@ from datetime import datetime
 def dtm():
     return f'[{datetime.now().strftime("%H:%M:%S")}]'
 
+cores = multiprocessing.cpu_count()
 def core_name():
-    return int(multiprocessing.current_process().name.split('-')[-1]) % 4
+    return int(multiprocessing.current_process().name.split('-')[-1]) % cores
 
 def crs():
     return "+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs"
@@ -351,158 +352,18 @@ def get_intersect_dist(df, intersects, index):
         
 def offset_by_intersect(df, intersects):
     
+    intersects = np.flip(intersects) 
     for i in range(len(intersects)):
         # the following line is not necessary but it will produce results consistent
         # with that of the non-parallel process
-        intersects = np.flip(intersects) 
         distance = get_intersect_dist(df, intersects, i)
         if distance >= 15 and distance <= df['along_track_distance'].iloc[-1] - 20:
             break
     # in theory distance should be approximately the distance of the along track distance at the
     # point of intersection. therefore distance can be subtracted from the along track dist
-    print(f"{dtm()} - CORE: {core_name()} - Along track offset: {distance}")
+    #print(f"{dtm()} - CORE: {core_name()} - Along track offset: {distance}")
     df['along_track_distance'] = df['along_track_distance'] - distance
     return df
-
-
-def find_gline_int(single_beam, gline_xy, verbose=True):
-    
-    """
-    Locates the intersection of the single_beam geodataframe and the gline_xy dataframe
-    
-    Parameters:
-    -----------
-    gdf.GeoDataFrame: single_beam
-          This is the dataframe either extracted from extract_data() or returned by compute_along_track_dist()
-    pd.DataFrame: gline_xy
-          The grounding line x & y values in EPSG:3031 as returned by gline_to_df
-    bool: verbose
-          Prints some helpful information for debugging
-          
-    Returns:
-    --------
-    gdf.GeoDataFrame: single_beam
-          Identical to single_beam input except with the "along_dist" column centered around
-          the grounding line
-    sp.Geometry.LineString: gline
-          Shapely linestring of the grounding line.
-    """
-    
-    track_maxx, track_minx = single_beam["x"].max(), single_beam["x"].min()
-    track_maxy, track_miny = single_beam["y"].max(), single_beam["y"].min()
-    
-    # Hunt for intersect w/ gline
-    
-    # prepare gline
-    gline_xy = gline_xy[(gline_xy["x"] < track_maxx) & (gline_xy["x"] > track_minx)]
-    gline_xy = gline_xy[(gline_xy["y"] < track_maxy) & (gline_xy["y"] > track_miny)]
-    
-    gline_x, gline_y = np.array(gline_xy["x"]), np.array(gline_xy["y"])
-    gline_delt = (np.diff(gline_x)**2 + np.diff(gline_y)**2)**0.5
-    breaks = [i for i, delt in enumerate(gline_delt) if delt > 10000]
-    
-    xs = np.split(gline_x, breaks)
-    ys = np.split(gline_y, breaks)
-    
-    if len(xs) != 0:
-        segments = []
-        for i in range(len(xs)): 
-            if len(xs[i]) >= 2:
-                gline_np = np.vstack((xs[i], ys[i])).T
-                segments.append(sp.geometry.LineString(gline_np))
-    else:
-        if verbose:
-            print("Cannot form into line segment. Gline intersection algorithm failure")
-        return None
-    
-    if len(gline_x) < 2:
-        return None
-    
-    full_gline = sp.geometry.LineString(np.vstack((gline_x, gline_y)).T)
-    
-    track_maxx, track_minx = single_beam["x"].max(), single_beam["x"].min()
-    track_maxy, track_miny = single_beam["y"].max(), single_beam["y"].min()
-    track_np = np.vstack((single_beam["x"], single_beam["y"]))
-    track = sp.geometry.LineString(track_np.T)
-    
-    for segment in segments:
-        intersect = segment.intersection(track)
-        if type(intersect) == sp.geometry.Point:
-            x_int, y_int = intersect.xy
-            x_int, y_int = x_int[0], y_int[0]
-            gline = segment
-            break
-        elif type(intersect) == sp.geometry.MultiPoint:
-            x_int, y_int = intersect.geoms[0].xy
-            x_int, y_int = x_int[0], y_int[0]
-            gline = segment
-            break
-        elif type(intersect) == sp.geometry.LineString: 
-            x_int, y_int = False, False
-            if verbose:
-                print(f"No intersection found!")
-                #print(find_gline_dist(single_beam, full_gline))
-            #return None
-            
-    if len(segments) < 1:
-        return None
-            
-    if x_int == False:
-        return None
-        
-    if verbose:
-        print(f"Found intersection at: {x_int},{y_int}")
-        
-    track_np = track_np.T
-    
-    direc_x, direc_y = [], []
-    
-    i = 0
-    while i < len(track_np) - 1:
-        if track_np[i, 0] < track_np[i+1, 0]:
-            direc_x.append(1)
-        else:
-            direc_x.append(-1)
-        if track_np[i, 1] < track_np[i + 1, 1]:
-            direc_y.append(1)
-        else:
-            direc_y.append(-1)                
-        i += 1
-
-    direc_x.append(direc_x[-1])
-    direc_y.append(direc_y[-1])
-
-    single_beam["direc_x"] = direc_x
-    single_beam["direc_y"] = direc_y
-
-    # get closest point
-    out = sp.ops.nearest_points(sp.geometry.MultiPoint(track_np), gline)
-    point, gline_nearest = out
-    row = single_beam[single_beam["x"] == point.x].iloc[0]
-
-    single_beam_clipped = single_beam
-
-    if row["direc_x"] == 1:
-        single_beam_clipped = single_beam_clipped[single_beam_clipped["x"] < x_int]
-    else:
-        single_beam_clipped = single_beam_clipped[single_beam_clipped["x"] > x_int]
-
-    if row["direc_y"] == 1:
-        single_beam_clipped = single_beam_clipped[single_beam_clipped["y"] < y_int]
-    else:
-        single_beam_clipped = single_beam_clipped[single_beam_clipped["y"] > y_int]
-
-    last_point = single_beam_clipped.iloc[-1]
-
-    int_dist = (((last_point["x"] - x_int)**2 + (last_point["y"] - y_int)**2)**0.5) / 1000 + row["along_dist"]
-    
-    if verbose:
-        print(f"Along track dist @ intersection {int_dist}")
-    
-    # offset the along track distance, to be 0 at the gline.
-    single_beam["along_dist"] = single_beam["along_dist"] - int_dist
-    
-    return single_beam, gline
 
 
 def interpolation(idx, track):
@@ -565,7 +426,7 @@ def clean_by_gaps(track, df, max_dist, count):
         if delt > (max_dist / 1000) and j < len(delta_dist):
             min_idx, max_idx = along_dist[j], along_dist[j + 1]
             df.loc[(df["along_track_distance"] > min_idx) & (df["along_track_distance"] < max_idx), ["slope", "h_li"]] = None
-            print(f"Removed data from {min_idx}km to {max_idx}km of delta {delt * 1000}m", end = "           \r")
+            #print(f"Removed data from {min_idx}km to {max_idx}km of delta {delt * 1000}m", end = "           \r")
             count += 1
     return df, count
     
@@ -832,12 +693,14 @@ def filt_peaks(peak_dists, track,  debug=False):
     track_std = np.nanstd(np.array(track["slope"]))
     track_avg = np.nanmean(np.array(track["slope"]))
     
+    atd_max, atd_min = np.max(track["along_track_distance"]), np.min(track["along_track_distance"])
+    
     # test to see if each peak passes the requirements
     for i, peak in enumerate(peak_dists):
         local = track[(track["along_track_distance"] < peak + buffer) & (track["along_track_distance"] > peak - buffer)]
         
         # only keep peak if there is very few nans nearby.
-        if nan_test(local, nan_max):# and rough_test(local, track_avg, track_std):
+        if nan_test(local, nan_max) and peak > atd_min + 50 and peak < atd_max - 50:# and rough_test(local, track_avg, track_std):
             # get flowslope and flowslope deviation near peak
             flowslope, flowslope_std = local_flowslope(local, peak)
             # compute mean both ahead & down track
