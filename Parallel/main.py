@@ -19,6 +19,8 @@ from time import time as Time
 
 h5coro.config(errorChecking=True, verbose=False, enableAttributes=False)
 
+
+
 def dtm():
     return f'[{datetime.now().strftime("%H:%M:%S")}]'
 
@@ -125,6 +127,7 @@ def find_gline(dct, gline):
         xys = np.vstack((xs, ys)).T
         gdf_points = gpd.GeoDataFrame({"geometry":[Point(x,y) for x,y in zip(xs, ys)]}, crs=crs())
         pi, li = get_intersections([LineString(xys), gline.iloc[0]])
+        
         try:
             if type(pi[0]) == list:
                 pi = pi[0]
@@ -133,7 +136,18 @@ def find_gline(dct, gline):
             # and/or check if no intersections exist
             print(f"{dtm()} - CORE: {core_name()} - [bold red]WARNING:[/bold red] [red]No valid point intersections found[/red]")
             continue
+            
         laser = offset_by_intersect(laser, pi)
+        
+        if rgt == '1101' and beam == 'gt3l':
+            ig, ax = plt.subplots(1, 1, figsize = (20, 4))
+            ax.plot(laser["along_track_distance"], laser["angle"], label="Flowslope")
+            ax.set_title("Along track slope break")
+            ax.set_ylabel("Flowslope (m/m)")
+            ax.set_xlabel("Along track dist (datumed) (km)")
+            ax.set_xlim(-67, 38)
+            plt.legend()
+            plt.savefig(f"{rgt}-{beam}.jpg")
         
         print(f"{dtm()} - CORE: {core_name()} - Found intersection and offset for {rgt}-{beam}")
         
@@ -143,6 +157,16 @@ def find_gline(dct, gline):
         laser = interp_clean_single(laser, 5000)
         if type(laser) == type(None):
             continue
+            
+        if rgt == '1101' and beam == 'gt3l':
+            ig, ax = plt.subplots(1, 1, figsize = (20, 4))
+            ax.plot(laser["along_track_distance"], laser["slope-filt"], label="Flowslope")
+            ax.set_title("Along track slope break")
+            ax.set_ylabel("Flowslope (m/m)")
+            ax.set_xlabel("Along track dist (datumed) (km)")
+            ax.set_xlim(-67, 38)
+            plt.legend()
+            plt.savefig(f"{rgt}-{beam}-filt.jpg")
         
         # remove track if too many nan
         fill = 0.66
@@ -207,6 +231,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--Cycles", type=str, help = "list of cycles (comma separated)")
     parser.add_argument("-sp", "--SpatialExtent", type=str, help = "filepath to spaital extent polygon")
+    parser.add_argument("-f", "--OutFile", type=str, help = "path to exported file")
     parser.add_argument("-gp", "--GPU", action=argparse.BooleanOptionalAction, help = "GPU Enable/disable GPU")
     args = parser.parse_args()
 
@@ -220,6 +245,8 @@ def main():
     
     cores = multiprocessing.cpu_count()
     print(f"[bold yellow]CORES:[/bold yellow] {cores}")
+    
+    print(f"[bold yellow]OUTPUT:[/bold yellow] {args.OutFile}")
 
     # load spatial extent
     mask, xlim, ylim = spatial_extent(spat_ext)
@@ -259,9 +286,10 @@ def main():
         print(f"{dtm()} - [italic bold yellow]Hunting for gline intersection[/italic bold yellow]")
         params = [(dct, gline) for dct in dcts]
         with multiprocessing.Pool(cores) as pool:
-            ibs = pool.starmap(find_gline, params)
-        ibs = [dct['ib'] for dct in dcts]
-        names = [dct['names'] for dct in dcts]
+            dcts = pool.starmap(find_gline, params)
+        
+        ibs = [dct['ib'] for dct in dcts if type(dct) != type(None)]
+        names = [dct['names'] for dct in dcts if type(dct) != type(None)]
         for name in names:
             allnames.extend(name)
         # remove Nan results
@@ -279,7 +307,7 @@ def main():
         ax.set_facecolor("gainsboro")
         gline.plot(ax=ax, color="black")
         
-        for ib, name in zip(allibs, names):
+        for ib, name in zip(allibs, allnames):
             ax.scatter(ib[0], ib[1], color="red", s = 3)
             ax.text(ib[0], ib[1], s=name)
 
@@ -292,6 +320,12 @@ def main():
         plt.ylim(ylim[0], ylim[1])
 
         plt.savefig("out.png")
+        
+        ibx = [ib[0] for ib in allibs]
+        iby = [ib[1] for ib in allibs]
+        
+        ibdat = pd.DataFrame({"x":ibx, "y":iby, "label":allnames})
+        ibdat.to_csv(args.OutFile)
         
         print(f"{dtm()} - -= BATCH TIME: {round(Time() - st, 4)} =-")
     

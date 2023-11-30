@@ -36,6 +36,8 @@ from rich.progress import (
 
 pretty.install()
 
+pd.options.mode.chained_assignment = None
+
 from datetime import datetime
 def dtm():
     return f'[{datetime.now().strftime("%H:%M:%S")}]'
@@ -151,7 +153,7 @@ def file_query(spt_ext, cyc):
     
     st = Time()
     # set up query object
-    region = ipx.Query("ATL06", spt_ext, cycles = 5)
+    region = ipx.Query("ATL06", spt_ext, cycles = cyc)
     # grab s3 links
     gran_ids = region.avail_granules(ids=True, cloud=True)
     links = gran_ids[1]
@@ -237,7 +239,40 @@ def reduce_dfs(lasers, beams, mask):
             bs.append(b)
     return nlasers, bs
     
+def XYvec_to_ang(origin, vector):
+    """
+    Takes an xy vector and returns the amount of degrees from the north axis it is.
 
+    Parameters
+    ----------
+    origin : tuple
+          (x, y) - Coordinate at which angle is from
+    vector : tuple
+          (x, y) - Point which forms vector
+
+    Returns
+    -------
+    angle : float
+          Angle from x in radians on the xy plane.
+    """
+    dx = vector[0] - origin[0]
+    if dx == 0:
+        return math.pi / 2
+    dy = vector[1] - origin[1]
+    angle = math.atan(dy/dx)
+    return angle
+
+
+def angleTransform(xvals, yvals):
+    """Performs XYvec_to_ang on an array of data"""
+    angles = []
+    for i in range(len(xvals)):
+        if i >= 0 and i < len(xvals) - 1:
+            angles.append(XYvec_to_ang((xvals[i], yvals[i]),(xvals[i+1], yvals[i+1])))
+        elif i == len(xvals) - 1:
+            angles.append(XYvec_to_ang((xvals[i-1], yvals[i-1]),(xvals[i], yvals[i])))
+    angles = np.array(angles)
+    return angles
 
 def dist_azumith(lasers, beams, GPU=False):
     
@@ -262,12 +297,67 @@ def dist_azumith(lasers, beams, GPU=False):
             
             # projected azumith from x and y coordinates
             frac = [y/x if x != 0 else float('inf') for x, y in zip(dx, dy)]
-            df["azumith"] = np.arctan(frac)
+            df["azumith"] = angleTransform(x, y) #np.arctan(frac)
 
             out.append(df)
             bs.append(b)
 
     return out, bs
+
+def calc_along_flow_slope(dh_fit_dx, dh_fit_dy, ascending, slope_azumith, flow_ang):
+    """
+    Takes the slope and across track slope and compute the slope in the direction of flow
+
+    Parameters
+    ----------
+    dh_fit_dx : int/float
+          Slope in the direction of laser track
+    dh_fit_dy : int/float
+          Across track slope orthogonal to the direction of the laser track
+    dh_fit_dx_sigma : int/float
+          Slope error in the direction of the laser track
+    slope_azumith : int/float
+          Azumith data for the laser track
+    flow_ang : int/float
+          Direction of flow in the xy plane
+    flow_ang_error : int/float
+          Error in the direction of flow
+    sc_orient : int
+          Int which says the direction of orbit.
+
+    Returns
+    -------
+    None : None
+          Data at the point did not have any across track slope data
+    slopeflowgrade : flow
+          Predicted slope in direction of flow
+    """
+    slopevec = np.array([math.cos(slope_azumith), math.sin(slope_azumith), dh_fit_dx])
+    slopevec = slopevec / (slopevec **2).sum()**0.5
+    if ascending == 1:# and slope_azumith < 1:
+        acrossslopevec = np.array([math.sin(slope_azumith), -1*math.cos(slope_azumith), dh_fit_dy])
+        acrossslopevec = acrossslopevec / (acrossslopevec**2).sum()**0.5
+    elif ascending == -1:# or slope_azumith > 1:
+        #slope_azumith = slope_azumith * -1
+        acrossslopevec = np.array([-1*math.sin(slope_azumith), math.cos(slope_azumith), dh_fit_dy])
+        acrossslopevec = acrossslopevec / (acrossslopevec**2).sum()**0.5
+    else:
+        return None
+    flowvec = np.array([math.cos(flow_ang), math.sin(flow_ang), 0])
+    slopeflowvec = (flowvec.dot(slopevec)/slopevec.dot(slopevec))*slopevec+(flowvec.dot(acrossslopevec)/acrossslopevec.dot(acrossslopevec))*acrossslopevec
+    slopeflowgrade = slopeflowvec[2] / math.sqrt(slopeflowvec[0]**2 + slopeflowvec[1]**2)
+    if dh_fit_dy >= 1e30:
+        return None
+    else:
+        return slopeflowgrade
+
+def get_flow_slopes(dh_fit_dx, dh_fit_dy, ascending, slope_azumith, flow_ang):
+    """Performs calc_along_flow_slope on an array of data"""
+    dh_fit_dx, dh_fit_dy, flow_ang = np.array(dh_fit_dx), np.array(dh_fit_dy), np.array(flow_ang)
+    slope_azumith  = np.array(slope_azumith)
+    along_flow_slope = np.array([calc_along_flow_slope(dh_fit_dx[i], dh_fit_dy[i], ascending[i], slope_azumith[i], flow_ang[i]) for i in range(len(flow_ang))])
+    along_flow_slope = along_flow_slope
+    return along_flow_slope
 
 
 def comp_flowslope(lasers, beams, flowgdf, GPU=False):
@@ -305,12 +395,12 @@ def comp_flowslope(lasers, beams, flowgdf, GPU=False):
                                 
             # transform the flow vector into a slope
             slopeflowgrade = [slopeflowvec[2] / math.sqrt(slopeflowvec[0]**2 + slopeflowvec[1]**2) for slopeflowvec in slopeflowvecs]
-                
             
-            df['slope'] = np.array(slopeflowgrade)
+            df['slope'] = get_flow_slopes(dh_fit_dxs, df['dh_fit_dy'], ascending, slope_azumiths, angles) #np.array(slopeflowgrade)
             
             # apply a rolling average
             df["slope"] = df["slope"].rolling(5).mean()
+            df["angle"] = angles
             
             out.append(df)
             bs.append(b)
@@ -387,10 +477,11 @@ def interpolation(idx, track):
     
     along_dist = track["along_track_distance"].values
     slope_raw = np.interp(idx, along_dist, track["slope"].values)
+    slope_filt = np.interp(idx, along_dist, track["slope-filt"].values)
     h_li = np.interp(idx, along_dist, track["h_li"].values)
     x = np.interp(idx, along_dist, track['x'].values)
     y = np.interp(idx, along_dist, track['y'].values)
-    df = pd.DataFrame(index = idx, data = {"along_track_distance":idx, "slope":slope_raw, "h_li":h_li, 'x':x, 'y':y})
+    df = pd.DataFrame(index = idx, data = {"along_track_distance":idx, "slope":slope_raw, "slope-filt":slope_filt, "h_li":h_li, 'x':x, 'y':y})
     
     return df
 
@@ -472,13 +563,17 @@ def interp_clean_single(track, fidelity):
 
     #df_full = interpolation(idx, track)
     # remove points which were interpolated over large chunks of missing data
+    order = 5
+    cutoff = 0.032 # found by https://doi.org/10.5194/tc-14-3629-2020
+    try:
+        track["slope-filt"] = apply_butter(track["slope"].values, order, cutoff) # uses scikit to apply the filter.
+    except ValueError:
+        return None
+    
     max_dist = 40 # value in meters
     count = 0
     df = interpolation(idx, track)
-    # apply butterworth filter
-    order = 5
-    cutoff = 0.032 # found by https://doi.org/10.5194/tc-14-3629-2020
-    df["slope-filt"] = apply_butter(df["slope"].values, order, cutoff) # uses scikit to apply the filter.
+    
     df, count = clean_by_gaps(track, df, max_dist, count)
     # remove points below a certain standard deviation threshold
     for dist in reversed(range(int(d_min * 1000), int(d_max * 1000), 100)):
@@ -487,6 +582,7 @@ def interp_clean_single(track, fidelity):
         if sel["slope-filt"].std() < 1e-10:
             df.loc[df["along_track_distance"] < dist, ["slope-filt", "h_li"]] = None
             break
+            
     #print(f"Deviation of {rgt}-{name}-{cycle}: {df['slope-filt'].std()}", end = "                                                         \r")
     if df["slope-filt"].values.std() < 1e-10:
         return None
