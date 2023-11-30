@@ -884,7 +884,7 @@ class Basemap:
 
     @staticmethod 
     def angleTransform(xvals, yvals):
-        """Performs angNorth_to_angXY on an array of data"""
+        """Performs XYvec_to_ang on an array of data"""
         angles = []
         for i in range(len(xvals)):
             if i >= 0 and i < len(xvals) - 1:
