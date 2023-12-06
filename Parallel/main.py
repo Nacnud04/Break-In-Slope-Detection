@@ -286,7 +286,7 @@ def main():
     
     for k, batch in enumerate(range(batchs)):
         st = Time()
-        print(f"{dtm()} - -= BATCH {batch} ({round(k/len(batchs))}%)=-")
+        print(f"{dtm()} - -= BATCH {batch} ({round(k/batchs)}%)=-")
         links, filecounts = linkbatchs[batch], cntbatchs[batch]
         params = [(l, creds, mask, flowslp, (xlim, ylim), GPU) for l in links]
 
