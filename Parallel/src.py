@@ -213,7 +213,7 @@ def make_laser(laser, rgt, region, cycle, name, bounds, GPU):
     direc = calc_direction(lat[:])
     dh_fit_dx = dh_fit_dx * direc
     
-    data = {"x":x[idmin:idmax], "y":y[idmin:idmax], "time":land_ice_segments["delta_time"][idmin:idmax], 
+    data = {"x":x[idmin:idmax], "y":y[idmin:idmax], "delta_time":land_ice_segments["delta_time"][idmin:idmax], 
             "h_li":land_ice_segments["h_li"][idmin:idmax], "dh_fit_dx":dh_fit_dx[idmin:idmax], 
             "dh_fit_dy":fit_statistics["dh_fit_dy"][idmin:idmax], 
             "azumith":land_ice_segments["ground_track"]["ref_azimuth"][idmin:idmax],
@@ -396,7 +396,10 @@ def comp_flowslope(lasers, beams, flowgdf, GPU=False):
             # transform the flow vector into a slope
             slopeflowgrade = [slopeflowvec[2] / math.sqrt(slopeflowvec[0]**2 + slopeflowvec[1]**2) for slopeflowvec in slopeflowvecs]
             
-            df['slope'] = get_flow_slopes(dh_fit_dxs, df['dh_fit_dy'], ascending, slope_azumiths, angles) #np.array(slopeflowgrade)
+            try:
+                df['slope'] = get_flow_slopes(dh_fit_dxs, df['dh_fit_dy'], ascending, slope_azumiths, angles) #np.array(slopeflowgrade)
+            except IndexError:
+                print(f"{dtm()} - CORE: {core_name()} - [bold red]ERROR:[/bold red] [red]Flow slope computation failed[/red]")
             
             # apply a rolling average
             df["slope"] = df["slope"].rolling(5).mean()
@@ -481,7 +484,8 @@ def interpolation(idx, track):
     h_li = np.interp(idx, along_dist, track["h_li"].values)
     x = np.interp(idx, along_dist, track['x'].values)
     y = np.interp(idx, along_dist, track['y'].values)
-    df = pd.DataFrame(index = idx, data = {"along_track_distance":idx, "slope":slope_raw, "slope-filt":slope_filt, "h_li":h_li, 'x':x, 'y':y})
+    dtm = np.interp(idx, along_dist, track["delta_time"].values)
+    df = pd.DataFrame(index = idx, data = {"along_track_distance":idx, "delta_time":dtm, "slope":slope_raw, "slope-filt":slope_filt, "h_li":h_li, 'x':x, 'y':y})
     
     return df
 

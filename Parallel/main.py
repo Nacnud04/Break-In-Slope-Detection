@@ -43,7 +43,7 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
     beams = ['gt1r','gt1l','gt2r','gt2l','gt3r','gt3l']
     items = ['land_ice_segments/latitude', 'land_ice_segments/longitude', 'land_ice_segments/h_li', "land_ice_segments/delta_time", "land_ice_segments/fit_statistics/dh_fit_dx", "land_ice_segments/fit_statistics/dh_fit_dy", 'land_ice_segments/ground_track/ref_azimuth','land_ice_segments/atl06_quality_summary']
     path_parts = [[f'/{beam}/{item}' for item in items] for beam in beams]
-    names = ['lat', 'lon', 'h_li', 'time', 'dh_fit_dx', 'dh_fit_dy', 'azumith', 'quality', 'rgt']
+    names = ['lat', 'lon', 'h_li', 'delta_time', 'dh_fit_dx', 'dh_fit_dy', 'azumith', 'quality', 'rgt']
     
     # join path names
     paths = []
@@ -52,7 +52,11 @@ def process(link, creds, mask, flowgdf, bounds, GPU):
         
     # read paths 
     h5obj = h5coro.H5Coro(link.split(':')[-1], s3driver.S3Driver, credentials=creds)
-    h5obj.readDatasets(paths, block=True)
+    try:
+        h5obj.readDatasets(paths, block=True)
+    except:
+        print(f"{dtm()} - [bold red]struct.error: unpack requires a buffer of 8 bytes[/bold red]")
+        return None
 
     # generate coordinate transform
     source_proj4 = '+proj=latlong +datum=WGS84'
@@ -122,6 +126,7 @@ def find_gline(dct, gline):
     # iterate through each laser, finding intersection of each track and adding offset
     ib = []
     names = []
+    times = []
     for laser, beam in zip(lasers, beams):
         xs, ys = laser['x'], laser['y']
         xys = np.vstack((xs, ys)).T
@@ -213,19 +218,21 @@ def find_gline(dct, gline):
             
             nearest_id = find_nearest(laser["along_track_distance"], peak)
             ib.append((laser.iloc[nearest_id]["x"], laser.iloc[nearest_id]["y"]))
-            names.append(f"{rgt}-{beam}")
+            times.append(laser.iloc[nearest_id]['delta_time'])
+            names.append(f"{cycle}-{rgt}-{beam}")
             print(f"{dtm()} - CORE: {core_name()} - [bold green]Found Ib of[/bold green] {rgt}-{beam} @ x:{ib[-1][0]} y:{ib[-1][1]}")
 
             if debug:
                 print(f"CHOICE:\n {peak} <-> {ib}")
             
-    return {"ib":ib, "names":names}
+    return {"ib":ib, "names":names, "times":times}
 
 
 def main():
 
     allibs = []
     allnames=[]
+    alltimes=[]
     
     # import arguments and parse arguments
     parser = argparse.ArgumentParser()
@@ -238,6 +245,8 @@ def main():
     GPU = args.GPU
 
     cycles = [int(x) for x in args.Cycles.split(',')]
+    if cycles[0] == 0:
+        cycles = list(range(1, 20))
     print(f"[bold yellow]CYCLES:[/bold yellow] {cycles}")
 
     spat_ext = args.SpatialExtent
@@ -275,9 +284,9 @@ def main():
 
     print(f"{dtm()} - Starting parallel processes")
     
-    for batch in range(batchs):
+    for k, batch in enumerate(range(batchs)):
         st = Time()
-        print(f"{dtm()} - -= BATCH {batch} =-")
+        print(f"{dtm()} - -= BATCH {batch} ({round(k/len(batchs))}%)=-")
         links, filecounts = linkbatchs[batch], cntbatchs[batch]
         params = [(l, creds, mask, flowslp, (xlim, ylim), GPU) for l in links]
 
@@ -290,8 +299,11 @@ def main():
         
         ibs = [dct['ib'] for dct in dcts if type(dct) != type(None)]
         names = [dct['names'] for dct in dcts if type(dct) != type(None)]
+        times = [dct['times'] for dct in dcts if type(dct) != type(None)]
         for name in names:
             allnames.extend(name)
+        for time in times:
+            alltimes.extend(time)
         # remove Nan results
         ibs = [i for i in ibs if i is not None]
         # remove arrays with no values returned
@@ -302,32 +314,50 @@ def main():
         allibs.extend(ibs_f)
             
         fig, ax = plt.subplots(1, 1, figsize = (10, 10))
-        range_cnt = 20
-
-        ax.set_facecolor("gainsboro")
-        gline.plot(ax=ax, color="black")
-        
-        for ib, name in zip(allibs, allnames):
-            ax.scatter(ib[0], ib[1], color="red", s = 3)
-            ax.text(ib[0], ib[1], s=name)
-
-        ax.set_title("Map of track, slope break, and ice plain")
-        ax.set_aspect('equal', adjustable='box')
-        ax.set_xlabel("EPSG:3031 x (m)")
-        ax.set_ylabel("EPSG:3031 y (m)")
-
-        plt.xlim(xlim[0], xlim[1])
-        plt.ylim(ylim[0], ylim[1])
-
-        plt.savefig("out.png")
-        
-        ibx = [ib[0] for ib in allibs]
-        iby = [ib[1] for ib in allibs]
-        
-        ibdat = pd.DataFrame({"x":ibx, "y":iby, "label":allnames})
-        ibdat.to_csv(args.OutFile)
+        range_cnt = 20        
         
         print(f"{dtm()} - -= BATCH TIME: {round(Time() - st, 4)} =-")
+        
+        if (k + 1) % 30 == 0:
+            creds = gen_s3()
+        
+    
+    # remove points which are more than 1100m from any other points
+    
+    ibx = np.array([ib[0] for ib in allibs])
+    iby = np.array([ib[1] for ib in allibs])
+    
+    
+    fx, fy, fnames, ftimes = [], [], [], []
+    for ib, name, time in zip(allibs, allnames, alltimes):
+        mibx, miby = ibx - ib[0], iby - ib[1]
+        dists = ((mibx**2)+(miby**2))**0.5
+        dists = dists[dists != 0]
+        if min(dists) < 1100:
+            fx.append(ib[0])
+            fy.append(ib[1])
+            fnames.append(name)
+            ftimes.append(time)
+        
+    ax.set_facecolor("gainsboro")
+    gline.plot(ax=ax, color="black")
+
+    for x, y, name in zip(fx, fy, fnames):
+        ax.scatter(x, y, color="red", s = 3)
+        ax.text(x, y, s=name)
+
+    ax.set_title("Map of track, slope break, and ice plain")
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlabel("EPSG:3031 x (m)")
+    ax.set_ylabel("EPSG:3031 y (m)")
+
+    plt.xlim(xlim[0], xlim[1])
+    plt.ylim(ylim[0], ylim[1])
+
+    plt.savefig("out.png")
+
+    ibdat = pd.DataFrame({"x":fx, "y":fy, "label":fnames, 'time':ftimes})
+    ibdat.to_csv(args.OutFile)
     
 if __name__ == "__main__":
     begin_time = Time()
